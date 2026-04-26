@@ -1,0 +1,160 @@
+---
+- name: Upgrade RKE2 nodes
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+    rke2_install_script_url: https://get.rke2.io
+    rke2_kubectl: /var/lib/rancher/rke2/bin/kubectl
+    rke2_kubeconfig: /etc/rancher/rke2/rke2.yaml
+    rke2_drain_node: true
+    rke2_reboot: false
+    rke2_wait_timeout: 600
+    rke2_node_name: "{{ ansible_hostname }}"
+    rke2_drain_timeout: 10m
+
+  pre_tasks:
+    - name: Require target RKE2 version
+      ansible.builtin.assert:
+        that:
+          - rke2_version is defined
+          - rke2_version | length > 0
+        fail_msg: "Set rke2_version, for example: v1.30.6+rke2r1"
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Detect RKE2 service
+      ansible.builtin.set_fact:
+        rke2_service_name: >-
+          {{
+            'rke2-server'
+            if 'rke2-server.service' in ansible_facts.services
+            else 'rke2-agent'
+            if 'rke2-agent.service' in ansible_facts.services
+            else ''
+          }}
+
+    - name: Fail when RKE2 service is not installed
+      ansible.builtin.fail:
+        msg: "Neither rke2-server nor rke2-agent service exists on this host."
+      when: rke2_service_name | length == 0
+
+    - name: Read current RKE2 version
+      ansible.builtin.command: rke2 --version
+      register: rke2_current_version
+      changed_when: false
+      failed_when: false
+
+    - name: Show current RKE2 version
+      ansible.builtin.debug:
+        msg: "{{ rke2_current_version.stdout_lines | default(['rke2 command not found']) }}"
+
+  tasks:
+    - name: Check kubectl availability
+      ansible.builtin.stat:
+        path: "{{ rke2_kubectl }}"
+      register: rke2_kubectl_stat
+
+    - name: Check kubeconfig availability
+      ansible.builtin.stat:
+        path: "{{ rke2_kubeconfig }}"
+      register: rke2_kubeconfig_stat
+
+    - name: Create etcd snapshot before server upgrade
+      ansible.builtin.command: rke2 etcd-snapshot save --name "pre-upgrade-{{ rke2_version | regex_replace('[^A-Za-z0-9_.-]', '-') }}"
+      when: rke2_service_name == 'rke2-server'
+      changed_when: true
+
+    - name: Drain node before upgrade
+      ansible.builtin.command: >-
+        {{ rke2_kubectl }}
+        --kubeconfig {{ rke2_kubeconfig }}
+        drain {{ rke2_node_name }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout={{ rke2_drain_timeout }}
+      environment:
+        KUBECONFIG: "{{ rke2_kubeconfig }}"
+      register: rke2_drain_result
+      changed_when: "'already cordoned' not in rke2_drain_result.stderr"
+      failed_when:
+        - rke2_drain_result.rc != 0
+        - "'already cordoned' not in rke2_drain_result.stderr"
+      when:
+        - rke2_drain_node | bool
+        - rke2_kubectl_stat.stat.exists
+        - rke2_kubeconfig_stat.stat.exists
+
+    - name: Download RKE2 install script
+      ansible.builtin.get_url:
+        url: "{{ rke2_install_script_url }}"
+        dest: /tmp/rke2-install.sh
+        mode: "0755"
+
+    - name: Run RKE2 installer for requested version
+      ansible.builtin.command: /tmp/rke2-install.sh
+      environment:
+        INSTALL_RKE2_VERSION: "{{ rke2_version }}"
+        INSTALL_RKE2_TYPE: "{{ 'server' if rke2_service_name == 'rke2-server' else 'agent' }}"
+      changed_when: true
+
+    - name: Restart RKE2 service
+      ansible.builtin.systemd:
+        name: "{{ rke2_service_name }}"
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Reboot after upgrade when requested
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ rke2_wait_timeout }}"
+      when: rke2_reboot | bool
+
+    - name: Wait for RKE2 service to become active
+      ansible.builtin.systemd:
+        name: "{{ rke2_service_name }}"
+        state: started
+      register: rke2_service_started
+      until: rke2_service_started.status.ActiveState == 'active'
+      retries: 30
+      delay: 10
+
+    - name: Wait for node to be Ready
+      ansible.builtin.command: >-
+        {{ rke2_kubectl }}
+        --kubeconfig {{ rke2_kubeconfig }}
+        wait node/{{ rke2_node_name }}
+        --for=condition=Ready
+        --timeout={{ rke2_wait_timeout }}s
+      environment:
+        KUBECONFIG: "{{ rke2_kubeconfig }}"
+      changed_when: false
+      when:
+        - rke2_kubectl_stat.stat.exists
+        - rke2_kubeconfig_stat.stat.exists
+
+  post_tasks:
+    - name: Uncordon node after upgrade
+      ansible.builtin.command: >-
+        {{ rke2_kubectl }}
+        --kubeconfig {{ rke2_kubeconfig }}
+        uncordon {{ rke2_node_name }}
+      environment:
+        KUBECONFIG: "{{ rke2_kubeconfig }}"
+      changed_when: true
+      when:
+        - rke2_drain_node | bool
+        - rke2_kubectl_stat.stat.exists
+        - rke2_kubeconfig_stat.stat.exists
+
+    - name: Read upgraded RKE2 version
+      ansible.builtin.command: rke2 --version
+      register: rke2_upgraded_version
+      changed_when: false
+
+    - name: Show upgraded RKE2 version
+      ansible.builtin.debug:
+        msg: "{{ rke2_upgraded_version.stdout_lines }}"
