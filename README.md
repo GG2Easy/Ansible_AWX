@@ -65,3 +65,20 @@ Do not target individual RKE2 nodes with this playbook. Target Rancher cluster o
 - `rancher_wait_delay`: Seconds between status checks. Defaults to `30`.
 
 If a cluster object is not in `fleet-default`, set `namespace` on that cluster entry.
+
+## Troubleshooting
+
+If the playbook fails while reading the Rancher cluster spec, check the sanitized HTTP status:
+
+- `connection-error`: AWX cannot reach Rancher. From the AWX execution environment, verify `https://rancher.local/ping` resolves and returns `pong`.
+- `401`: the Rancher token is invalid, expired, or copied incorrectly.
+- `403`: the token is valid but does not have permission to read or update the cluster.
+- `404`: the `name` or `namespace` does not match the Rancher provisioning cluster object.
+
+To confirm the cluster object name, open:
+
+```text
+https://rancher.local/v1/provisioning.cattle.io.clusters
+```
+
+Use the object `metadata.name` and `metadata.namespace` values in `rke2_cluster_upgrades`.
