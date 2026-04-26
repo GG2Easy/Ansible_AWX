@@ -75,26 +75,39 @@
       failed_when: false
       no_log: true
 
+    - name: Build sanitized Rancher cluster read errors
+      ansible.builtin.set_fact:
+        rancher_cluster_read_errors: >-
+          {{
+            rancher_cluster_read_errors | default([])
+            + [
+              {
+                'cluster': item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.name,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token is authenticated but not allowed to read this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
+                  if (item.status | default(0) | int) == 404
+                  else item.msg | default(item.json.message | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_cluster_specs.results }}"
+      when: (item.status | default(0) | int) != 200
+      no_log: true
+
     - name: Fail with sanitized Rancher cluster read error
       ansible.builtin.fail:
         msg: >-
-          Could not read Rancher cluster
-          {{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}
-          from {{ rancher_api_root }}.
-          HTTP status={{ item.status | default('connection-error') }}.
-          {{
-            'Check rancher_token; Rancher rejected authentication.'
-            if (item.status | default(0) | int) == 401
-            else 'Check Rancher token permissions; token is authenticated but not allowed to read this cluster.'
-            if (item.status | default(0) | int) == 403
-            else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
-            if (item.status | default(0) | int) == 404
-            else item.msg | default(item.json.message | default('No additional error message from Rancher.'))
-          }}
-      loop: "{{ rancher_cluster_specs.results }}"
+          Could not read Rancher cluster {{ item.cluster }} from {{ rancher_api_root }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_cluster_read_errors | default([]) }}"
       loop_control:
-        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
-      when: (item.status | default(0) | int) != 200
+        label: "{{ item.cluster }}"
 
     - name: Show requested upgrade plan
       ansible.builtin.debug:
@@ -139,28 +152,42 @@
       failed_when: false
       no_log: true
 
-    - name: Fail with sanitized Rancher upgrade request error
-      ansible.builtin.fail:
-        msg: >-
-          Rancher rejected upgrade request for
-          {{ item.item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.item.name }}
-          to {{ item.item.item.version }}.
-          HTTP status={{ item.status | default('connection-error') }}.
+    - name: Build sanitized Rancher upgrade request errors
+      ansible.builtin.set_fact:
+        rancher_upgrade_request_errors: >-
           {{
-            'Check rancher_token; Rancher rejected authentication.'
-            if (item.status | default(0) | int) == 401
-            else 'Check Rancher token permissions; token is authenticated but cannot update this cluster.'
-            if (item.status | default(0) | int) == 403
-            else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
-            if (item.status | default(0) | int) == 404
-            else item.json.message | default(item.msg | default('No additional error message from Rancher.'))
+            rancher_upgrade_request_errors | default([])
+            + [
+              {
+                'cluster': item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.name,
+                'version': item.item.item.version,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token is authenticated but cannot update this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
+                  if (item.status | default(0) | int) == 404
+                  else item.json.message | default(item.msg | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
           }}
       loop: "{{ rancher_upgrade_requests.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.item.name }}"
       when:
         - not (item.skipped | default(false) | bool)
         - (item.status | default(0) | int) not in [200, 202]
+      no_log: true
+
+    - name: Fail with sanitized Rancher upgrade request error
+      ansible.builtin.fail:
+        msg: >-
+          Rancher rejected upgrade request for {{ item.cluster }} to {{ item.version }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_upgrade_request_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
 
     - name: Report clusters already at requested version
       ansible.builtin.debug:
