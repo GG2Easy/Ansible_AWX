@@ -124,15 +124,23 @@
         url: >-
           {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
           item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}
-        method: PATCH
+        method: PUT
         headers:
           Authorization: "Bearer {{ rancher_token }}"
           Accept: application/json
-          Content-Type: application/merge-patch+json
+          Content-Type: application/json
         body_format: json
-        body:
-          spec:
-            kubernetesVersion: "{{ item.item.version }}"
+        body: >-
+          {{
+            item.json
+            | combine(
+              {
+                'spec': item.json.spec
+                | combine({'kubernetesVersion': item.item.version}, recursive=True)
+              },
+              recursive=True
+            )
+          }}
         return_content: true
         validate_certs: "{{ rancher_validate_certs | bool }}"
         status_code:

@@ -74,6 +74,7 @@ If the playbook fails while reading the Rancher cluster spec, check the sanitize
 - `401`: the Rancher token is invalid, expired, or copied incorrectly.
 - `403`: the token is valid but does not have permission to read or update the cluster.
 - `404`: the `name` or `namespace` does not match the Rancher provisioning cluster object.
+- `400` or `422`: Rancher found the cluster but rejected the requested version or object update.
 
 To confirm the cluster object name, open:
 
