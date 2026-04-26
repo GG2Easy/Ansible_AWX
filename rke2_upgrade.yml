@@ -1,160 +1,158 @@
 ---
-- name: Upgrade RKE2 nodes
-  hosts: "{{ target_hosts | default('all') }}"
-  become: true
-  gather_facts: true
-  serial: 1
+- name: Trigger Rancher-managed RKE2 upgrades
+  hosts: localhost
+  connection: local
+  gather_facts: false
 
   vars:
-    rke2_install_script_url: https://get.rke2.io
-    rke2_kubectl: /var/lib/rancher/rke2/bin/kubectl
-    rke2_kubeconfig: /etc/rancher/rke2/rke2.yaml
-    rke2_drain_node: true
-    rke2_reboot: false
-    rke2_wait_timeout: 600
-    rke2_node_name: "{{ ansible_hostname }}"
-    rke2_drain_timeout: 10m
+    rancher_validate_certs: true
+    rancher_cluster_namespace: fleet-default
+    rancher_wait: true
+    rancher_wait_retries: 120
+    rancher_wait_delay: 30
+    rancher_api_root: "{{ rancher_url | regex_replace('/+$', '') }}"
 
   pre_tasks:
-    - name: Require target RKE2 version
+    - name: Require Rancher connection settings
       ansible.builtin.assert:
         that:
-          - rke2_version is defined
-          - rke2_version | length > 0
-        fail_msg: "Set rke2_version, for example: v1.30.6+rke2r1"
+          - rancher_url is defined
+          - rancher_url | length > 0
+          - rancher_token is defined
+          - rancher_token | length > 0
+        fail_msg: "Set rancher_url and rancher_token in AWX credentials or extra vars."
 
-    - name: Collect service facts
-      ansible.builtin.service_facts:
+    - name: Require at least one cluster upgrade request
+      ansible.builtin.assert:
+        that:
+          - rke2_cluster_upgrades is defined
+          - rke2_cluster_upgrades | length > 0
+        fail_msg: "Set rke2_cluster_upgrades with cluster name/namespace/version entries."
 
-    - name: Detect RKE2 service
-      ansible.builtin.set_fact:
-        rke2_service_name: >-
-          {{
-            'rke2-server'
-            if 'rke2-server.service' in ansible_facts.services
-            else 'rke2-agent'
-            if 'rke2-agent.service' in ansible_facts.services
-            else ''
-          }}
-
-    - name: Fail when RKE2 service is not installed
-      ansible.builtin.fail:
-        msg: "Neither rke2-server nor rke2-agent service exists on this host."
-      when: rke2_service_name | length == 0
-
-    - name: Read current RKE2 version
-      ansible.builtin.command: rke2 --version
-      register: rke2_current_version
-      changed_when: false
-      failed_when: false
-
-    - name: Show current RKE2 version
-      ansible.builtin.debug:
-        msg: "{{ rke2_current_version.stdout_lines | default(['rke2 command not found']) }}"
+    - name: Validate cluster upgrade entries
+      ansible.builtin.assert:
+        that:
+          - item.name is defined
+          - item.name | length > 0
+          - item.version is defined
+          - item.version | length > 0
+        fail_msg: "Each rke2_cluster_upgrades item needs name and version."
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.name | default('missing-name') }}"
 
   tasks:
-    - name: Check kubectl availability
-      ansible.builtin.stat:
-        path: "{{ rke2_kubectl }}"
-      register: rke2_kubectl_stat
+    - name: Read current Rancher cluster specs
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
+          item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code: 200
+      register: rancher_cluster_specs
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}"
+      no_log: true
 
-    - name: Check kubeconfig availability
-      ansible.builtin.stat:
-        path: "{{ rke2_kubeconfig }}"
-      register: rke2_kubeconfig_stat
-
-    - name: Create etcd snapshot before server upgrade
-      ansible.builtin.command: rke2 etcd-snapshot save --name "pre-upgrade-{{ rke2_version | regex_replace('[^A-Za-z0-9_.-]', '-') }}"
-      when: rke2_service_name == 'rke2-server'
-      changed_when: true
-
-    - name: Drain node before upgrade
-      ansible.builtin.command: >-
-        {{ rke2_kubectl }}
-        --kubeconfig {{ rke2_kubeconfig }}
-        drain {{ rke2_node_name }}
-        --ignore-daemonsets
-        --delete-emptydir-data
-        --timeout={{ rke2_drain_timeout }}
-      environment:
-        KUBECONFIG: "{{ rke2_kubeconfig }}"
-      register: rke2_drain_result
-      changed_when: "'already cordoned' not in rke2_drain_result.stderr"
-      failed_when:
-        - rke2_drain_result.rc != 0
-        - "'already cordoned' not in rke2_drain_result.stderr"
-      when:
-        - rke2_drain_node | bool
-        - rke2_kubectl_stat.stat.exists
-        - rke2_kubeconfig_stat.stat.exists
-
-    - name: Download RKE2 install script
-      ansible.builtin.get_url:
-        url: "{{ rke2_install_script_url }}"
-        dest: /tmp/rke2-install.sh
-        mode: "0755"
-
-    - name: Run RKE2 installer for requested version
-      ansible.builtin.command: /tmp/rke2-install.sh
-      environment:
-        INSTALL_RKE2_VERSION: "{{ rke2_version }}"
-        INSTALL_RKE2_TYPE: "{{ 'server' if rke2_service_name == 'rke2-server' else 'agent' }}"
-      changed_when: true
-
-    - name: Restart RKE2 service
-      ansible.builtin.systemd:
-        name: "{{ rke2_service_name }}"
-        state: restarted
-        enabled: true
-        daemon_reload: true
-
-    - name: Reboot after upgrade when requested
-      ansible.builtin.reboot:
-        reboot_timeout: "{{ rke2_wait_timeout }}"
-      when: rke2_reboot | bool
-
-    - name: Wait for RKE2 service to become active
-      ansible.builtin.systemd:
-        name: "{{ rke2_service_name }}"
-        state: started
-      register: rke2_service_started
-      until: rke2_service_started.status.ActiveState == 'active'
-      retries: 30
-      delay: 10
-
-    - name: Wait for node to be Ready
-      ansible.builtin.command: >-
-        {{ rke2_kubectl }}
-        --kubeconfig {{ rke2_kubeconfig }}
-        wait node/{{ rke2_node_name }}
-        --for=condition=Ready
-        --timeout={{ rke2_wait_timeout }}s
-      environment:
-        KUBECONFIG: "{{ rke2_kubeconfig }}"
-      changed_when: false
-      when:
-        - rke2_kubectl_stat.stat.exists
-        - rke2_kubeconfig_stat.stat.exists
-
-  post_tasks:
-    - name: Uncordon node after upgrade
-      ansible.builtin.command: >-
-        {{ rke2_kubectl }}
-        --kubeconfig {{ rke2_kubeconfig }}
-        uncordon {{ rke2_node_name }}
-      environment:
-        KUBECONFIG: "{{ rke2_kubeconfig }}"
-      changed_when: true
-      when:
-        - rke2_drain_node | bool
-        - rke2_kubectl_stat.stat.exists
-        - rke2_kubeconfig_stat.stat.exists
-
-    - name: Read upgraded RKE2 version
-      ansible.builtin.command: rke2 --version
-      register: rke2_upgraded_version
-      changed_when: false
-
-    - name: Show upgraded RKE2 version
+    - name: Show requested upgrade plan
       ansible.builtin.debug:
-        msg: "{{ rke2_upgraded_version.stdout_lines }}"
+        msg:
+          cluster: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+          current_version: "{{ item.json.spec.kubernetesVersion | default('unknown') }}"
+          desired_version: "{{ item.item.version }}"
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+
+    - name: Trigger Rancher upgrade for clusters that need it
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
+          item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+          Content-Type: application/merge-patch+json
+        body_format: json
+        body:
+          spec:
+            kubernetesVersion: "{{ item.item.version }}"
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 202
+      register: rancher_upgrade_requests
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      changed_when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
+      when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
+      no_log: true
+
+    - name: Report clusters already at requested version
+      ansible.builtin.debug:
+        msg: "{{ item.item.name }} is already set to {{ item.item.version }} in Rancher."
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      when: item.json.spec.kubernetesVersion | default('') == item.item.version
+
+    - name: Wait for Rancher to report upgraded clusters Ready
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
+          item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code: 200
+      register: rancher_upgrade_status
+      until:
+        - (rancher_upgrade_status.json.spec.kubernetesVersion | default('')) == item.version
+        - >-
+          (rancher_upgrade_status.json.metadata.generation is not defined)
+          or
+          (rancher_upgrade_status.json.status.observedGeneration is not defined)
+          or
+          ((rancher_upgrade_status.json.status.observedGeneration | int) >= (rancher_upgrade_status.json.metadata.generation | int))
+        - >-
+          (rancher_upgrade_status.json.status.ready | default(false) | bool)
+          or
+          (
+            rancher_upgrade_status.json.status.conditions | default([])
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) > 0
+      retries: "{{ rancher_wait_retries }}"
+      delay: "{{ rancher_wait_delay }}"
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}"
+      when: rancher_wait | bool
+      no_log: true
+
+    - name: Show final Rancher upgrade status
+      ansible.builtin.debug:
+        msg:
+          cluster: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+          desired_version: "{{ item.item.version }}"
+          rancher_version: "{{ item.json.spec.kubernetesVersion | default('unknown') }}"
+          ready: "{{ item.json.status.ready | default(false) }}"
+          state: "{{ item.json.metadata.state.name | default(item.json.state | default('unknown')) }}"
+      loop: "{{ rancher_upgrade_status.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      when: rancher_wait | bool
