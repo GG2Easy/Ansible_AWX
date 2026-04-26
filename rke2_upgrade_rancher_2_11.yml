@@ -1,0 +1,438 @@
+---
+- name: Trigger Rancher 2.11 managed RKE2 upgrades
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    rancher_validate_certs: true
+    rancher_cluster_namespace: fleet-default
+    rancher_create_snapshot: true
+    rancher_snapshot_wait: true
+    rancher_snapshot_wait_retries: 60
+    rancher_snapshot_wait_delay: 10
+    rancher_wait: true
+    rancher_wait_retries: 120
+    rancher_wait_delay: 30
+    rancher_api_root: "{{ rancher_url | regex_replace('/+$', '') }}"
+
+  pre_tasks:
+    - name: Require Rancher connection settings
+      ansible.builtin.assert:
+        that:
+          - rancher_url is defined
+          - rancher_url | length > 0
+          - rancher_token is defined
+          - rancher_token | length > 0
+        fail_msg: "Set rancher_url and rancher_token in AWX credentials or extra vars."
+
+    - name: Require at least one cluster upgrade request
+      ansible.builtin.assert:
+        that:
+          - rke2_cluster_upgrades is defined
+          - rke2_cluster_upgrades | length > 0
+        fail_msg: "Set rke2_cluster_upgrades with cluster name/namespace/version entries."
+
+    - name: Validate cluster upgrade entries
+      ansible.builtin.assert:
+        that:
+          - item.name is defined
+          - item.name | length > 0
+          - item.version is defined
+          - item.version | length > 0
+        fail_msg: "Each rke2_cluster_upgrades item needs name and version."
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.name | default('missing-name') }}"
+
+  tasks:
+    - name: Check Rancher API reachability
+      ansible.builtin.uri:
+        url: "{{ rancher_api_root }}/ping"
+        method: GET
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code: 200
+      changed_when: false
+
+    - name: Read current Rancher provisioning cluster specs
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/apis/provisioning.cattle.io/v1/namespaces/{{
+          item.namespace | default(rancher_cluster_namespace) }}/clusters/{{ item.name }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 401
+          - 403
+          - 404
+      register: rancher_cluster_specs
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}"
+      failed_when: false
+      no_log: true
+
+    - name: Build sanitized cluster read errors
+      ansible.builtin.set_fact:
+        rancher_cluster_read_errors: >-
+          {{
+            rancher_cluster_read_errors | default([])
+            + [
+              {
+                'cluster': item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.name,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token cannot read this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster.'
+                  if (item.status | default(0) | int) == 404
+                  else item.msg | default(item.json.message | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_cluster_specs.results }}"
+      when: (item.status | default(0) | int) != 200
+      no_log: true
+
+    - name: Fail with sanitized cluster read error
+      ansible.builtin.fail:
+        msg: >-
+          Could not read Rancher provisioning cluster {{ item.cluster }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_cluster_read_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
+
+    - name: Show requested upgrade plan
+      ansible.builtin.debug:
+        msg:
+          cluster: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+          current_version: "{{ item.json.spec.kubernetesVersion | default('unknown') }}"
+          desired_version: "{{ item.item.version }}"
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+
+    - name: Request Rancher etcd snapshot before upgrade
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/apis/provisioning.cattle.io/v1/namespaces/{{
+          item.item.namespace | default(rancher_cluster_namespace) }}/clusters/{{ item.item.name }}
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+          Content-Type: application/merge-patch+json
+        body_format: json
+        body:
+          spec:
+            rkeConfig:
+              etcdSnapshotCreate:
+                generation: >-
+                  {{
+                    (
+                      ((item.json.spec.rkeConfig | default({})).etcdSnapshotCreate | default({})).generation
+                      | default(0)
+                      | int
+                    ) + 1
+                  }}
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 201
+          - 202
+          - 400
+          - 401
+          - 403
+          - 404
+          - 422
+      register: rancher_snapshot_requests
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      changed_when: true
+      when:
+        - rancher_create_snapshot | bool
+        - (item.json.spec.kubernetesVersion | default('')) != item.item.version
+      failed_when: false
+      no_log: true
+
+    - name: Build sanitized snapshot request errors
+      ansible.builtin.set_fact:
+        rancher_snapshot_request_errors: >-
+          {{
+            rancher_snapshot_request_errors | default([])
+            + [
+              {
+                'cluster': item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.name,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token cannot update this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster.'
+                  if (item.status | default(0) | int) == 404
+                  else item.json.message | default(item.msg | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_snapshot_requests.results | default([]) }}"
+      when:
+        - not (item.skipped | default(false) | bool)
+        - (item.status | default(0) | int) not in [200, 201, 202]
+      no_log: true
+
+    - name: Fail with sanitized snapshot request error
+      ansible.builtin.fail:
+        msg: >-
+          Rancher rejected snapshot request for {{ item.cluster }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_snapshot_request_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
+
+    - name: Wait for Rancher etcd snapshot to finish
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/apis/rke.cattle.io/v1/namespaces/{{
+          item.item.item.namespace | default(rancher_cluster_namespace) }}/rkecontrolplanes/{{
+          item.item.item.rke_control_plane_name | default(item.item.item.name) }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 401
+          - 403
+          - 404
+      register: rancher_snapshot_status
+      until:
+        - (rancher_snapshot_status.status | default(0) | int) == 200
+        - >-
+          (
+            rancher_snapshot_status.json.status.etcdSnapshotCreate.generation
+            | default(0)
+            | int
+          ) >=
+          (
+            ((item.item.json.spec.rkeConfig | default({})).etcdSnapshotCreate | default({})).generation
+            | default(0)
+            | int
+          ) + 1
+        - rancher_snapshot_status.json.status.etcdSnapshotCreatePhase | default('') == 'Finished'
+      failed_when:
+        - (rancher_snapshot_status.status | default(0) | int) == 200
+        - rancher_snapshot_status.json.status.etcdSnapshotCreatePhase | default('') == 'Failed'
+      retries: "{{ rancher_snapshot_wait_retries }}"
+      delay: "{{ rancher_snapshot_wait_delay }}"
+      loop: "{{ rancher_snapshot_requests.results | default([]) }}"
+      loop_control:
+        label: >-
+          {{ item.item.item.namespace | default(rancher_cluster_namespace) }}/{{
+          item.item.item.rke_control_plane_name | default(item.item.item.name) }}
+      ignore_errors: true
+      when:
+        - rancher_create_snapshot | bool
+        - rancher_snapshot_wait | bool
+        - not (item.skipped | default(false) | bool)
+        - (item.status | default(0) | int) in [200, 201, 202]
+      no_log: true
+
+    - name: Build sanitized snapshot wait errors
+      ansible.builtin.set_fact:
+        rancher_snapshot_wait_errors: >-
+          {{
+            rancher_snapshot_wait_errors | default([])
+            + [
+              {
+                'cluster': item.item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.item.name,
+                'rke_control_plane': item.item.item.item.rke_control_plane_name | default(item.item.item.item.name),
+                'status': item.status | default('connection-error'),
+                'phase': item.json.status.etcdSnapshotCreatePhase | default('unknown'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token cannot read the RKEControlPlane object.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check rke_control_plane_name; Rancher did not find this RKEControlPlane object.'
+                  if (item.status | default(0) | int) == 404
+                  else 'Rancher reported snapshot phase Failed.'
+                  if item.json.status.etcdSnapshotCreatePhase | default('') == 'Failed'
+                  else 'Snapshot did not finish before the wait timeout.'
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_snapshot_status.results | default([]) }}"
+      when:
+        - not (item.skipped | default(false) | bool)
+        - >-
+          (item.status | default(0) | int) != 200
+          or
+          (item.json.status.etcdSnapshotCreatePhase | default('')) != 'Finished'
+      no_log: true
+
+    - name: Fail with sanitized snapshot wait error
+      ansible.builtin.fail:
+        msg: >-
+          Rancher etcd snapshot did not finish for {{ item.cluster }}
+          using RKEControlPlane {{ item.rke_control_plane }}.
+          HTTP status={{ item.status }}. phase={{ item.phase }}. {{ item.message }}
+      loop: "{{ rancher_snapshot_wait_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
+
+    - name: Show Rancher snapshot completion
+      ansible.builtin.debug:
+        msg:
+          cluster: "{{ item.item.item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.item.item.name }}"
+          rke_control_plane: "{{ item.item.item.item.rke_control_plane_name | default(item.item.item.item.name) }}"
+          snapshot_generation: "{{ item.json.status.etcdSnapshotCreate.generation | default('unknown') }}"
+          snapshot_phase: "{{ item.json.status.etcdSnapshotCreatePhase | default('unknown') }}"
+      loop: "{{ rancher_snapshot_status.results | default([]) }}"
+      loop_control:
+        label: >-
+          {{ item.item.item.item.namespace | default(rancher_cluster_namespace) }}/{{
+          item.item.item.item.rke_control_plane_name | default(item.item.item.item.name) }}
+      when:
+        - rancher_create_snapshot | bool
+        - rancher_snapshot_wait | bool
+        - not (item.skipped | default(false) | bool)
+
+    - name: Trigger Rancher-managed RKE2 upgrade
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/apis/provisioning.cattle.io/v1/namespaces/{{
+          item.item.namespace | default(rancher_cluster_namespace) }}/clusters/{{ item.item.name }}
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+          Content-Type: application/merge-patch+json
+        body_format: json
+        body:
+          spec:
+            kubernetesVersion: "{{ item.item.version }}"
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 201
+          - 202
+          - 400
+          - 401
+          - 403
+          - 404
+          - 422
+      register: rancher_upgrade_requests
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      changed_when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
+      when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
+      failed_when: false
+      no_log: true
+
+    - name: Build sanitized upgrade request errors
+      ansible.builtin.set_fact:
+        rancher_upgrade_request_errors: >-
+          {{
+            rancher_upgrade_request_errors | default([])
+            + [
+              {
+                'cluster': item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.name,
+                'version': item.item.item.version,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token cannot update this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster.'
+                  if (item.status | default(0) | int) == 404
+                  else item.json.message | default(item.msg | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_upgrade_requests.results | default([]) }}"
+      when:
+        - not (item.skipped | default(false) | bool)
+        - (item.status | default(0) | int) not in [200, 201, 202]
+      no_log: true
+
+    - name: Fail with sanitized upgrade request error
+      ansible.builtin.fail:
+        msg: >-
+          Rancher rejected upgrade request for {{ item.cluster }} to {{ item.version }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_upgrade_request_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
+
+    - name: Wait for Rancher to report upgraded clusters Ready
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/apis/provisioning.cattle.io/v1/namespaces/{{
+          item.namespace | default(rancher_cluster_namespace) }}/clusters/{{ item.name }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code: 200
+      register: rancher_upgrade_status
+      until:
+        - (rancher_upgrade_status.json.spec.kubernetesVersion | default('')) == item.version
+        - >-
+          (rancher_upgrade_status.json.metadata.generation is not defined)
+          or
+          (rancher_upgrade_status.json.status.observedGeneration is not defined)
+          or
+          ((rancher_upgrade_status.json.status.observedGeneration | int) >= (rancher_upgrade_status.json.metadata.generation | int))
+        - >-
+          (rancher_upgrade_status.json.status.ready | default(false) | bool)
+          or
+          (
+            rancher_upgrade_status.json.status.conditions | default([])
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list
+            | length
+          ) > 0
+      retries: "{{ rancher_wait_retries }}"
+      delay: "{{ rancher_wait_delay }}"
+      loop: "{{ rke2_cluster_upgrades }}"
+      loop_control:
+        label: "{{ item.namespace | default(rancher_cluster_namespace) }}/{{ item.name }}"
+      when: rancher_wait | bool
+      no_log: true
+
+    - name: Show final Rancher upgrade status
+      ansible.builtin.debug:
+        msg:
+          cluster: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+          desired_version: "{{ item.item.version }}"
+          rancher_version: "{{ item.json.spec.kubernetesVersion | default('unknown') }}"
+          ready: "{{ item.json.status.ready | default(false) }}"
+          phase: "{{ item.json.status.clusterName | default('unknown') }}"
+      loop: "{{ rancher_upgrade_status.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      when: rancher_wait | bool

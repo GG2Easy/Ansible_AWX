@@ -6,6 +6,8 @@ This repository contains Ansible playbooks intended to run from AWX.
 
 Use `rke2_upgrade.yml` to trigger upgrades for Rancher-created RKE2 clusters.
 
+For Rancher v2.11, use `rke2_upgrade_rancher_2_11.yml`. It performs the same workflow through Rancher's Kubernetes-style API endpoints under `/apis/...`, which are documented in the Rancher 2.11 API reference.
+
 The playbook does **not** SSH to the RKE2 nodes and does **not** run the local RKE2 installer. It patches the Rancher provisioning cluster object by setting `spec.kubernetesVersion`. Rancher then performs the node rollout and keeps its cluster state in sync.
 
 This matters because local node upgrades can leave Rancher stuck in states such as `waiting for kubelet to update`.
@@ -15,6 +17,7 @@ This matters because local node upgrades can leave Rancher stuck in states such 
 Recommended AWX job template settings:
 
 - **Playbook:** `rke2_upgrade.yml`
+- **Rancher v2.11 playbook:** `rke2_upgrade_rancher_2_11.yml`
 - **Inventory:** localhost inventory, or any inventory with localhost available
 - **Credentials:** no SSH credential required for the target nodes
 - **Rancher token:** store as an AWX credential or encrypted variable
