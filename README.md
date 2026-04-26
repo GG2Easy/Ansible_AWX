@@ -26,6 +26,8 @@ Example:
 rancher_url: https://rancher.example.local
 rancher_token: token-xxxxx:yyyyyyyyyyyyyyyyyyyy
 rancher_validate_certs: false
+rancher_create_snapshot: true
+rancher_snapshot_wait: true
 
 rke2_cluster_upgrades:
   - name: lab-single-node
@@ -60,11 +62,45 @@ Do not target individual RKE2 nodes with this playbook. Target Rancher cluster o
 - `rancher_validate_certs`: Validate Rancher TLS certificate. Defaults to `true`; set `false` for lab/self-signed certificates.
 - `rancher_cluster_namespace`: Default namespace for cluster objects. Defaults to `fleet-default`.
 - `rke2_cluster_upgrades`: Required list of cluster upgrade requests.
+- `rancher_create_snapshot`: Request a Rancher-managed one-time etcd snapshot before changing the Kubernetes version. Defaults to `true`.
+- `rancher_snapshot_wait`: Wait for Rancher to report the one-time etcd snapshot as finished before starting the upgrade. Defaults to `true`.
+- `rancher_snapshot_wait_retries`: Number of snapshot status checks. Defaults to `60`.
+- `rancher_snapshot_wait_delay`: Seconds between snapshot status checks. Defaults to `10`.
 - `rancher_wait`: Wait for Rancher to report the cluster Ready after triggering the upgrade. Defaults to `true`.
 - `rancher_wait_retries`: Number of status checks. Defaults to `120`.
 - `rancher_wait_delay`: Seconds between status checks. Defaults to `30`.
 
 If a cluster object is not in `fleet-default`, set `namespace` on that cluster entry.
+
+## Snapshot behavior
+
+Before changing `spec.kubernetesVersion`, the playbook requests a Rancher-managed one-time etcd snapshot by incrementing:
+
+```yaml
+spec:
+  rkeConfig:
+    etcdSnapshotCreate:
+      generation: <next number>
+```
+
+Rancher performs the snapshot through the downstream RKE2/K3s engine. Snapshot files are stored according to the cluster's etcd snapshot configuration, either locally on etcd nodes or in the configured S3 target.
+
+After requesting the snapshot, the playbook polls the Rancher `RKEControlPlane` object and waits for:
+
+```yaml
+status:
+  etcdSnapshotCreatePhase: Finished
+```
+
+By default, the RKEControlPlane object name is assumed to match the cluster name. If it differs, set `rke_control_plane_name` on that cluster entry:
+
+```yaml
+rke2_cluster_upgrades:
+  - name: rke2
+    namespace: fleet-default
+    rke_control_plane_name: rke2
+    version: v1.30.6+rke2r1
+```
 
 ## Troubleshooting
 
