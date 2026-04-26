@@ -330,11 +330,68 @@
         - rancher_snapshot_wait | bool
         - not (item.skipped | default(false) | bool)
 
-    - name: Trigger Rancher upgrade for clusters that need it
+    - name: Refresh Rancher cluster specs before upgrade
       ansible.builtin.uri:
         url: >-
           {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
           item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rancher_token }}"
+          Accept: application/json
+        return_content: true
+        validate_certs: "{{ rancher_validate_certs | bool }}"
+        status_code:
+          - 200
+          - 401
+          - 403
+          - 404
+      register: rancher_cluster_specs_before_upgrade
+      loop: "{{ rancher_cluster_specs.results }}"
+      loop_control:
+        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
+      failed_when: false
+      no_log: true
+
+    - name: Build sanitized Rancher cluster refresh errors
+      ansible.builtin.set_fact:
+        rancher_cluster_refresh_errors: >-
+          {{
+            rancher_cluster_refresh_errors | default([])
+            + [
+              {
+                'cluster': item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.name,
+                'status': item.status | default('connection-error'),
+                'message': (
+                  'Check rancher_token; Rancher rejected authentication.'
+                  if (item.status | default(0) | int) == 401
+                  else 'Check Rancher token permissions; token is authenticated but not allowed to read this cluster.'
+                  if (item.status | default(0) | int) == 403
+                  else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
+                  if (item.status | default(0) | int) == 404
+                  else item.msg | default(item.json.message | default('No additional error message from Rancher.'))
+                )
+              }
+            ]
+          }}
+      loop: "{{ rancher_cluster_specs_before_upgrade.results }}"
+      when: (item.status | default(0) | int) != 200
+      no_log: true
+
+    - name: Fail with sanitized Rancher cluster refresh error
+      ansible.builtin.fail:
+        msg: >-
+          Could not refresh Rancher cluster {{ item.cluster }} from {{ rancher_api_root }}.
+          HTTP status={{ item.status }}. {{ item.message }}
+      loop: "{{ rancher_cluster_refresh_errors | default([]) }}"
+      loop_control:
+        label: "{{ item.cluster }}"
+
+    - name: Trigger Rancher upgrade for clusters that need it
+      ansible.builtin.uri:
+        url: >-
+          {{ rancher_api_root }}/v1/provisioning.cattle.io.clusters/{{
+          item.item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.item.name }}
         method: PUT
         headers:
           Authorization: "Bearer {{ rancher_token }}"
@@ -347,7 +404,7 @@
             | combine(
               {
                 'spec': item.json.spec
-                | combine({'kubernetesVersion': item.item.version}, recursive=True)
+                | combine({'kubernetesVersion': item.item.item.version}, recursive=True)
               },
               recursive=True
             )
@@ -361,13 +418,14 @@
           - 401
           - 403
           - 404
+          - 409
           - 422
       register: rancher_upgrade_requests
-      loop: "{{ rancher_cluster_specs.results }}"
+      loop: "{{ rancher_cluster_specs_before_upgrade.results }}"
       loop_control:
-        label: "{{ item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.name }}"
-      changed_when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
-      when: (item.json.spec.kubernetesVersion | default('')) != item.item.version
+        label: "{{ item.item.item.namespace | default(rancher_cluster_namespace) }}/{{ item.item.item.name }}"
+      changed_when: (item.json.spec.kubernetesVersion | default('')) != item.item.item.version
+      when: (item.json.spec.kubernetesVersion | default('')) != item.item.item.version
       failed_when: false
       no_log: true
 
@@ -378,8 +436,8 @@
             rancher_upgrade_request_errors | default([])
             + [
               {
-                'cluster': item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.name,
-                'version': item.item.item.version,
+                'cluster': item.item.item.item.namespace | default(rancher_cluster_namespace) ~ '/' ~ item.item.item.item.name,
+                'version': item.item.item.item.version,
                 'status': item.status | default('connection-error'),
                 'message': (
                   'Check rancher_token; Rancher rejected authentication.'
@@ -388,6 +446,8 @@
                   if (item.status | default(0) | int) == 403
                   else 'Check cluster name and namespace; Rancher did not find this provisioning cluster object.'
                   if (item.status | default(0) | int) == 404
+                  else 'Rancher reported a resource version conflict; rerun the job so it can use the latest cluster object.'
+                  if (item.status | default(0) | int) == 409
                   else item.json.message | default(item.msg | default('No additional error message from Rancher.'))
                 )
               }
