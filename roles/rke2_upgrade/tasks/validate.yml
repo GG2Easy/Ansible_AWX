@@ -1,0 +1,119 @@
+---
+- name: Validate the AWX Kubernetes credential inputs
+  ansible.builtin.assert:
+    that:
+      - rancher_api_url | length > 0
+      - lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') | length > 0
+    fail_msg: >-
+      Attach an OpenShift or Kubernetes API Bearer Token credential containing
+      the Rancher endpoint and bearer token.
+    quiet: true
+  no_log: true
+
+- name: Validate the requested RKE2 version format
+  ansible.builtin.assert:
+    that:
+      - rke2_target_version is string
+      - rke2_target_version | regex_search('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
+    fail_msg: >-
+      rke2_target_version must be an exact release such as v1.35.7+rke2r1.
+
+- name: Read the Rancher management Cluster
+  kubernetes.core.k8s_info:
+    host: "{{ rancher_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    api_version: management.cattle.io/v3
+    kind: Cluster
+    name: "{{ rancher_cluster_id }}"
+  register: rancher_management_cluster
+  changed_when: false
+
+- name: Confirm Rancher knows and can reach the downstream cluster
+  ansible.builtin.assert:
+    that:
+      - rancher_management_cluster.resources | length == 1
+      - >-
+        rancher_management_cluster.resources[0].status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length == 1
+      - >-
+        rancher_management_cluster.resources[0].status.conditions
+        | selectattr('type', 'equalto', 'Connected')
+        | selectattr('status', 'equalto', 'True')
+        | list | length == 1
+    fail_msg: "Rancher does not report cluster {{ rancher_cluster_id }} as Ready and Connected."
+
+- name: Read downstream RKE2 nodes through the Rancher proxy
+  kubernetes.core.k8s_info:
+    host: "{{ rancher_downstream_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    api_version: v1
+    kind: Node
+  register: rke2_nodes_before
+  changed_when: false
+
+- name: Validate the single-node all-roles topology
+  ansible.builtin.assert:
+    that:
+      - rke2_nodes_before.resources | length == rke2_expected_node_count | int
+      - >-
+        rke2_nodes_before.resources[0].status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length == 1
+      - "'node-role.kubernetes.io/control-plane' in rke2_nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/etcd' in rke2_nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/worker' in rke2_nodes_before.resources[0].metadata.labels"
+    fail_msg: >-
+      The workflow expects one Ready RKE2 node with control-plane, etcd, and
+      worker roles.
+
+- name: Record the current RKE2 version
+  ansible.builtin.set_fact:
+    rke2_current_version: "{{ rke2_nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"
+
+- name: Parse current and requested version components
+  ansible.builtin.set_fact:
+    rke2_current_version_parts: >-
+      {{ rke2_current_version
+         | regex_findall('^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$')
+         | first }}
+    rke2_target_version_parts: >-
+      {{ rke2_target_version
+         | regex_findall('^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$')
+         | first }}
+
+- name: Enforce a forward, sequential RKE2 upgrade
+  ansible.builtin.assert:
+    that:
+      - rke2_target_version != rke2_current_version
+      - rke2_target_version_parts[0] | int == rke2_current_version_parts[0] | int
+      - rke2_target_version_parts[1] | int >= rke2_current_version_parts[1] | int
+      - rke2_target_version_parts[1] | int <= (rke2_current_version_parts[1] | int) + 1
+      - >-
+        (rke2_target_version_parts[1] | int > rke2_current_version_parts[1] | int)
+        or
+        (rke2_target_version_parts[2] | int > rke2_current_version_parts[2] | int)
+        or
+        (
+          rke2_target_version_parts[2] | int == rke2_current_version_parts[2] | int
+          and rke2_target_version_parts[3] | int > rke2_current_version_parts[3] | int
+        )
+    fail_msg: >-
+      Refusing {{ rke2_current_version }} -> {{ rke2_target_version }}.
+      Downgrades, major changes, and skipped minor versions are not allowed.
+
+- name: Confirm the requested version is an official RKE2 release
+  ansible.builtin.uri:
+    url: >-
+      https://api.github.com/repos/rancher/rke2/releases/tags/{{
+      rke2_target_version | urlencode }}
+    method: GET
+    headers:
+      Accept: application/vnd.github+json
+    status_code: 200
+    return_content: false
+  register: rke2_release_lookup
+  changed_when: false
+  when: rke2_verify_release_tag | bool

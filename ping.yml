@@ -1,9 +1,0 @@
-# ping.yml
----
-- name: Test connection
-  hosts: all
-  gather_facts: false
-
-  tasks:
-    - name: Ping host
-      ansible.builtin.ping:

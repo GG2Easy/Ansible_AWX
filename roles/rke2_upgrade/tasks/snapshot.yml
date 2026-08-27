@@ -1,0 +1,110 @@
+---
+- name: Read existing downstream snapshot records
+  kubernetes.core.k8s_info:
+    host: "{{ rancher_downstream_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    api_version: k3s.cattle.io/v1
+    kind: ETCDSnapshotFile
+  register: rke2_snapshot_files_before
+  changed_when: false
+
+- name: Choose a stable maintenance run identifier
+  ansible.builtin.set_fact:
+    rke2_maintenance_run_id: >-
+      {{ lookup('ansible.builtin.env', 'AWX_JOB_ID')
+         | default(now(utc=true, fmt='%Y%m%d%H%M%S'), true) }}
+
+- name: Build snapshot and operation names
+  ansible.builtin.set_fact:
+    rke2_snapshot_name: >-
+      {{ ('awx-pre-upgrade-' ~ rke2_maintenance_run_id)
+         | lower
+         | regex_replace('[^a-z0-9-]', '-')
+         | truncate(48, true, '') }}
+    rke2_snapshot_operation_name: >-
+      {{ ('awx-pre-upgrade-' ~ rke2_maintenance_run_id)
+         | lower
+         | regex_replace('[^a-z0-9-]', '-')
+         | truncate(63, true, '') }}
+
+- name: Request an on-demand snapshot from Rancher
+  kubernetes.core.k8s:
+    host: "{{ rancher_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    state: present
+    definition:
+      apiVersion: operation.cattle.io/v1alpha1
+      kind: ETCDSnapshotSave
+      metadata:
+        name: "{{ rke2_snapshot_operation_name }}"
+        namespace: "{{ rancher_cluster_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: rke2-upgrade
+      spec:
+        args:
+          name: "{{ rke2_snapshot_name }}"
+        clusterRef:
+          apiVersion: management.cattle.io/v3
+          kind: Cluster
+          name: "{{ rancher_cluster_id }}"
+        ttl: "{{ rke2_snapshot_operation_ttl_seconds | int }}"
+  register: rke2_snapshot_request
+
+- name: Wait for Rancher to finish the snapshot operation
+  kubernetes.core.k8s_info:
+    host: "{{ rancher_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    api_version: operation.cattle.io/v1alpha1
+    kind: ETCDSnapshotSave
+    namespace: "{{ rancher_cluster_namespace }}"
+    name: "{{ rke2_snapshot_operation_name }}"
+  register: rke2_snapshot_operation
+  changed_when: false
+  until:
+    - rke2_snapshot_operation.resources | length == 1
+    - >-
+      rke2_snapshot_operation.resources[0].status.phase | default('')
+      in ['Succeeded', 'Failed', 'Canceled']
+  retries: "{{ (rke2_snapshot_timeout_seconds / rke2_snapshot_poll_seconds) | int }}"
+  delay: "{{ rke2_snapshot_poll_seconds | int }}"
+
+- name: Require a successful Rancher snapshot operation
+  ansible.builtin.assert:
+    that:
+      - rke2_snapshot_operation.resources[0].status.phase == 'Succeeded'
+    fail_msg: >-
+      Snapshot operation {{ rke2_snapshot_operation_name }} ended in
+      {{ rke2_snapshot_operation.resources[0].status.phase }}:
+      {{ rke2_snapshot_operation.resources[0].status.conditions | default([]) }}
+
+- name: Confirm the snapshot file is registered downstream
+  kubernetes.core.k8s_info:
+    host: "{{ rancher_downstream_api_url }}"
+    validate_certs: "{{ rancher_validate_certs }}"
+    api_version: k3s.cattle.io/v1
+    kind: ETCDSnapshotFile
+  register: rke2_snapshot_files_after
+  changed_when: false
+  vars:
+    rke2_matching_snapshot_files: >-
+      {{ rke2_snapshot_files_after.resources
+         | selectattr('metadata.name', 'search', rke2_snapshot_name | regex_escape)
+         | list }}
+  until: rke2_matching_snapshot_files | length > 0
+  retries: 30
+  delay: 2
+
+- name: Record verified snapshot metadata
+  ansible.builtin.set_fact:
+    rke2_verified_snapshot_files: >-
+      {{ rke2_snapshot_files_after.resources
+         | selectattr('metadata.name', 'search', rke2_snapshot_name | regex_escape)
+         | list }}
+
+- name: Report the verified pre-upgrade snapshot
+  ansible.builtin.debug:
+    msg:
+      operation: "{{ rke2_snapshot_operation_name }}"
+      snapshot_prefix: "{{ rke2_snapshot_name }}"
+      files: "{{ rke2_verified_snapshot_files | map(attribute='metadata.name') | list }}"
