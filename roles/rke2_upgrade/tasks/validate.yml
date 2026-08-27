@@ -86,17 +86,17 @@
   ansible.builtin.assert:
     that:
       - rke2_target_version != rke2_current_version
-      - rke2_target_version_parts[0] | int == rke2_current_version_parts[0] | int
-      - rke2_target_version_parts[1] | int >= rke2_current_version_parts[1] | int
-      - rke2_target_version_parts[1] | int <= (rke2_current_version_parts[1] | int) + 1
+      - (rke2_target_version_parts[0] | int) == (rke2_current_version_parts[0] | int)
+      - (rke2_target_version_parts[1] | int) >= (rke2_current_version_parts[1] | int)
+      - (rke2_target_version_parts[1] | int) <= ((rke2_current_version_parts[1] | int) + 1)
       - >-
-        (rke2_target_version_parts[1] | int > rke2_current_version_parts[1] | int)
+        ((rke2_target_version_parts[1] | int) > (rke2_current_version_parts[1] | int))
         or
-        (rke2_target_version_parts[2] | int > rke2_current_version_parts[2] | int)
+        ((rke2_target_version_parts[2] | int) > (rke2_current_version_parts[2] | int))
         or
         (
-          rke2_target_version_parts[2] | int == rke2_current_version_parts[2] | int
-          and rke2_target_version_parts[3] | int > rke2_current_version_parts[3] | int
+          (rke2_target_version_parts[2] | int) == (rke2_current_version_parts[2] | int)
+          and (rke2_target_version_parts[3] | int) > (rke2_current_version_parts[3] | int)
         )
     fail_msg: >-
       Refusing {{ rke2_current_version }} -> {{ rke2_target_version }}.
