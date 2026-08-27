@@ -24,29 +24,22 @@
   delay: 10
 
 - name: Wait for Rancher to report the downstream cluster healthy
-  kubernetes.core.k8s_info:
-    host: "{{ rancher_api_url }}"
+  ansible.builtin.uri:
+    url: "{{ rancher_api_url }}/v3/clusters/{{ rancher_cluster_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') }}"
+      Accept: application/json
     validate_certs: "{{ rancher_validate_certs }}"
-    api_version: management.cattle.io/v3
-    kind: Cluster
-    name: "{{ rancher_cluster_id }}"
+    return_content: true
+    status_code: 200
   register: rancher_cluster_after
   changed_when: false
-  vars:
-    rancher_ready_condition: >-
-      {{ rancher_cluster_after.resources[0].status.conditions | default([])
-         | selectattr('type', 'equalto', 'Ready')
-         | selectattr('status', 'equalto', 'True')
-         | list }}
-    rancher_connected_condition: >-
-      {{ rancher_cluster_after.resources[0].status.conditions | default([])
-         | selectattr('type', 'equalto', 'Connected')
-         | selectattr('status', 'equalto', 'True')
-         | list }}
+  no_log: true
   until:
-    - rancher_cluster_after.resources | length == 1
-    - rancher_ready_condition | length == 1
-    - rancher_connected_condition | length == 1
+    - rancher_cluster_after.json.state == 'active'
+    - rancher_cluster_after.json.transitioning == 'no'
+    - rancher_cluster_after.json.version.gitVersion == rke2_target_version
   retries: 60
   delay: 10
 
@@ -59,7 +52,10 @@
         rke2_nodes_after.resources
         | selectattr('status.nodeInfo.kubeletVersion', 'equalto', rke2_target_version)
         | list | length == rke2_expected_node_count | int
-      - rancher_cluster_after.resources | length == 1
+      - rancher_cluster_after.json.id == rancher_cluster_id
+      - rancher_cluster_after.json.state == 'active'
+      - rancher_cluster_after.json.transitioning == 'no'
+      - rancher_cluster_after.json.version.gitVersion == rke2_target_version
     fail_msg: "RKE2 or Rancher did not converge to the requested healthy state."
 
 - name: Report the completed upgrade

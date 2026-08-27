@@ -18,31 +18,29 @@
     fail_msg: >-
       rke2_target_version must be an exact release such as v1.35.7+rke2r1.
 
-- name: Read the Rancher management Cluster
-  kubernetes.core.k8s_info:
-    host: "{{ rancher_api_url }}"
+- name: Read the downstream cluster from the Rancher API
+  ansible.builtin.uri:
+    url: "{{ rancher_api_url }}/v3/clusters/{{ rancher_cluster_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') }}"
+      Accept: application/json
     validate_certs: "{{ rancher_validate_certs }}"
-    api_version: management.cattle.io/v3
-    kind: Cluster
-    name: "{{ rancher_cluster_id }}"
+    return_content: true
+    status_code: 200
   register: rancher_management_cluster
   changed_when: false
+  no_log: true
 
 - name: Confirm Rancher knows and can reach the downstream cluster
   ansible.builtin.assert:
     that:
-      - rancher_management_cluster.resources | length == 1
-      - >-
-        rancher_management_cluster.resources[0].status.conditions
-        | selectattr('type', 'equalto', 'Ready')
-        | selectattr('status', 'equalto', 'True')
-        | list | length == 1
-      - >-
-        rancher_management_cluster.resources[0].status.conditions
-        | selectattr('type', 'equalto', 'Connected')
-        | selectattr('status', 'equalto', 'True')
-        | list | length == 1
-    fail_msg: "Rancher does not report cluster {{ rancher_cluster_id }} as Ready and Connected."
+      - rancher_management_cluster.json.id == rancher_cluster_id
+      - rancher_management_cluster.json.state == 'active'
+      - rancher_management_cluster.json.transitioning == 'no'
+    fail_msg: >-
+      Rancher does not report cluster {{ rancher_cluster_id }} as active and
+      non-transitioning.
 
 - name: Read downstream RKE2 nodes through the Rancher proxy
   kubernetes.core.k8s_info:

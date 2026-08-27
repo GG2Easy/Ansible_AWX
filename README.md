@@ -8,7 +8,7 @@ use SSH for cluster maintenance and does not use `kdeploy`.
 The workflow:
 
 1. Authenticates to Rancher with the AWX-injected bearer token.
-2. Confirms Rancher reports the downstream cluster Ready and Connected.
+2. Confirms Rancher reports the downstream cluster active and non-transitioning.
 3. Confirms the node is Ready and has control-plane, etcd, and worker roles.
 4. Validates the requested RKE2 release and rejects downgrades or skipped
    minor versions.
@@ -55,9 +55,11 @@ env:
   K8S_AUTH_VERIFY_SSL: "{{ verify_ssl }}"
 ```
 
-The supplied VM configuration script creates both credentials. The custom job
-credential injects `K8S_AUTH_HOST`, `K8S_AUTH_API_KEY`, and
-`K8S_AUTH_VERIFY_SSL`. The role uses the Rancher management endpoint
+Attach both credentials to the job template. This keeps the requested built-in
+**OpenShift or Kubernetes API Bearer Token** credential visible on the
+template, while the custom credential supplies the environment injectors that
+the managed built-in type does not provide. The supplied VM configuration
+script creates and attaches both credentials. The role uses the Rancher API
 for the snapshot operation and the Rancher downstream proxy at
 `/k8s/clusters/c-n6thr` for Kubernetes resources.
 
@@ -77,15 +79,19 @@ Create a job template with:
 
 - **Playbook:** `playbooks/rke2_upgrade.yml`
 - **Inventory:** a localhost inventory, or the existing `RKE2` inventory
-- **Credential:** `Rancher RKE2 Bearer Token - Job`
+- **Credentials:** `Rancher RKE2 Bearer Token` and
+  `Rancher RKE2 Bearer Token - Job`
 - **Survey enabled:** yes
 
 Import [awx/survey_spec.json](awx/survey_spec.json) as the survey definition.
-The required survey variable is `rke2_target_version`.
+The required survey variable is `rke2_target_version`. It is a single-select
+multiple-choice question with these currently offered upgrade targets:
 
-The default survey value is `v1.35.7+rke2r1`, which is one minor
-release above the lab's initial `v1.34.10+rke2r1`. Edit the survey
-default as the environment changes. The role still verifies that the exact
+- `v1.35.6+rke2r1`
+- `v1.35.7+rke2r1` (default)
+
+Both are one minor release above the lab's initial `v1.34.10+rke2r1`. Update
+the choices as the environment changes. The role still verifies that the exact
 tag exists in the official RKE2 GitHub releases.
 
 ## Local syntax check

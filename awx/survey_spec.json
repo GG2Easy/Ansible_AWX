@@ -1,15 +1,17 @@
 {
   "name": "RKE2 target version",
-  "description": "Select an exact RKE2 release. The playbook rejects downgrades, major-version changes, skipped minor releases, and unknown GitHub release tags.",
+  "description": "Select one supported next-minor RKE2 release. The playbook also verifies the release and rejects unsafe upgrade paths.",
   "spec": [
     {
       "question_name": "Desired RKE2 version",
-      "question_description": "Exact release in vX.Y.Z+rke2rN format. From v1.34.10+rke2r1, choose a v1.34 patch or v1.35 release.",
+      "question_description": "Choose one of the two currently offered RKE2 v1.35 upgrade targets.",
       "required": true,
-      "type": "text",
+      "type": "multiplechoice",
       "variable": "rke2_target_version",
-      "min": 12,
-      "max": 32,
+      "choices": [
+        "v1.35.6+rke2r1",
+        "v1.35.7+rke2r1"
+      ],
       "default": "v1.35.7+rke2r1"
     }
   ]
