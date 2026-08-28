@@ -4,6 +4,7 @@
   connection: local
   gather_facts: false
   any_errors_fatal: true
-
+  enviroment:
+    K8S_AUTH_HOST: "{{ rancher_url }}/k8s/clusters/{{ clusterid }}"
   roles:
     - role: k8s.rke2lifecycle.rke2lifecycle
