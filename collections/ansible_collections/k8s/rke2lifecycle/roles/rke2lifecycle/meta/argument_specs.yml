@@ -56,6 +56,9 @@ argument_specs:
       rke2lifecycle_upgrade_concurrency:
         type: int
         description: Maximum number of nodes upgraded concurrently.
+      rke2lifecycle_upgrade_cordon:
+        type: bool
+        description: Cordon nodes during upgrade; requires node get and patch RBAC.
       rke2lifecycle_upgrade_timeout_seconds:
         type: int
         description: Maximum wait for Plan completion.

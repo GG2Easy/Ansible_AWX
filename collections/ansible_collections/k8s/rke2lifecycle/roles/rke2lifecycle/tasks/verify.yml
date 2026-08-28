@@ -1,4 +1,20 @@
 ---
+- name: Read the completed System Upgrade Controller Plan
+  kubernetes.core.k8s_info:
+    host: "{{ rke2lifecycle_downstream_api_url }}"
+    api_key: "{{ rke2lifecycle_api_key }}"
+    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    api_version: upgrade.cattle.io/v1
+    kind: Plan
+    namespace: "{{ rke2lifecycle_upgrade_namespace }}"
+    name: "{{ rke2lifecycle_upgrade_plan_name }}"
+  register: rke2lifecycle_upgrade_plan
+  changed_when: false
+  until:
+    - rke2lifecycle_upgrade_plan.get('resources', []) | length == 1
+  retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
+  delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
+
 - name: Wait for all RKE2 nodes to return Ready on the requested version
   kubernetes.core.k8s_info:
     host: "{{ rke2lifecycle_downstream_api_url }}"
@@ -10,14 +26,15 @@
   changed_when: false
   vars:
     rke2lifecycle_nodes_at_target: >-
-      {{ rke2lifecycle_nodes_after.resources
+      {{ rke2lifecycle_nodes_after.get('resources', [])
          | selectattr('status.nodeInfo.kubeletVersion', 'equalto', rke2lifecycle_target_version)
          | list }}
   until:
-    - rke2lifecycle_nodes_after.resources | length == rke2lifecycle_expected_node_count | int
+    - rke2lifecycle_nodes_after.get('resources', []) | length == rke2lifecycle_expected_node_count | int
     - rke2lifecycle_nodes_at_target | length == rke2lifecycle_expected_node_count | int
     - >-
-      rke2lifecycle_nodes_after.resources[0].status.conditions
+      (rke2lifecycle_nodes_after.get('resources', [])
+       | first | default({})).get('status', {}).get('conditions', [])
       | selectattr('type', 'equalto', 'Ready')
       | selectattr('status', 'equalto', 'True')
       | list | length == 1
@@ -38,16 +55,18 @@
   changed_when: false
   no_log: true
   until:
-    - rke2lifecycle_cluster_after.json.state == 'active'
-    - rke2lifecycle_cluster_after.json.transitioning == 'no'
-    - rke2lifecycle_cluster_after.json.version.gitVersion == rke2lifecycle_target_version
+    - rke2lifecycle_cluster_after.get('json', {}).get('state', '') == 'active'
+    - rke2lifecycle_cluster_after.get('json', {}).get('transitioning', '') == 'no'
+    - rke2lifecycle_cluster_after.get('json', {}).get('version', {}).get('gitVersion', '') == rke2lifecycle_target_version
   retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
   delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
 
 - name: Confirm the final Plan, node, and Rancher states
   ansible.builtin.assert:
     that:
-      - rke2lifecycle_upgrade_plan.resources[0].status.latestVersion == rke2lifecycle_target_version
+      - >-
+        rke2lifecycle_upgrade_plan.resources[0].status.latestVersion
+        == (rke2lifecycle_target_version | replace('+', '-'))
       - rke2lifecycle_nodes_after.resources | length == rke2lifecycle_expected_node_count | int
       - >-
         rke2lifecycle_nodes_after.resources
@@ -63,8 +82,10 @@
   ansible.builtin.debug:
     msg:
       rke2lifecycle_cluster: "{{ rke2lifecycle_cluster_id }}"
-      previous_version: "{{ rke2lifecycle_current_version }}"
+      previous_version: "{{ rke2lifecycle_current_version | default('not collected in verify-only mode') }}"
       requested_version: "{{ rke2lifecycle_target_version }}"
       node_versions: "{{ rke2lifecycle_nodes_after.resources | map(attribute='status.nodeInfo.kubeletVersion') | list }}"
-      snapshot_files: "{{ rke2lifecycle_verified_snapshot_files | map(attribute='metadata.name') | list }}"
+      snapshot_files: >-
+        {{ rke2lifecycle_verified_snapshot_files | default([])
+           | map(attribute='metadata.name') | list }}
       plan: "{{ rke2lifecycle_upgrade_namespace }}/{{ rke2lifecycle_upgrade_plan_name }}"

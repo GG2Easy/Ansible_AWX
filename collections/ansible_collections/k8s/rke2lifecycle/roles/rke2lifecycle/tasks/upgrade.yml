@@ -15,37 +15,29 @@
           app.kubernetes.io/managed-by: ansible
           app.kubernetes.io/part-of: rke2-upgrade
 
+- name: Render the upgrade Plan with native YAML types
+  ansible.builtin.set_fact:
+    rke2lifecycle_upgrade_plan_definition: >-
+      {{ lookup('ansible.builtin.template', 'rke2_upgrade_plan.yml.j2')
+         | from_yaml }}
+
+- name: Validate the rendered upgrade Plan
+  ansible.builtin.assert:
+    that:
+      - rke2lifecycle_upgrade_plan_definition is mapping
+      - rke2lifecycle_upgrade_plan_definition.spec.concurrency is integer
+      - rke2lifecycle_upgrade_plan_definition.spec.cordon is boolean
+    fail_msg: >-
+      The RKE2 upgrade Plan must contain native integer and boolean fields.
+    quiet: true
+
 - name: Submit the RKE2 server upgrade Plan
   kubernetes.core.k8s:
     host: "{{ rke2lifecycle_downstream_api_url }}"
     api_key: "{{ rke2lifecycle_api_key }}"
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
     state: present
-    definition:
-      apiVersion: upgrade.cattle.io/v1
-      kind: Plan
-      metadata:
-        name: "{{ rke2lifecycle_upgrade_plan_name }}"
-        namespace: "{{ rke2lifecycle_upgrade_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: ansible
-          app.kubernetes.io/part-of: rke2-upgrade
-        annotations:
-          awx.ansible.com/requested-version: "{{ rke2lifecycle_target_version }}"
-          awx.ansible.com/snapshot-operation: "{{ rke2lifecycle_snapshot_operation_name }}"
-      spec:
-        concurrency: "{{ rke2lifecycle_upgrade_concurrency | int }}"
-        cordon: true
-        nodeSelector:
-          matchExpressions:
-            - key: node-role.kubernetes.io/control-plane
-              operator: Exists
-        serviceAccountName: "{{ rke2lifecycle_upgrade_service_account_name }}"
-        tolerations:
-          - operator: Exists
-        upgrade:
-          image: rancher/rke2-upgrade
-        version: "{{ rke2lifecycle_target_version }}"
+    definition: "{{ rke2lifecycle_upgrade_plan_definition }}"
   register: rke2lifecycle_upgrade_plan_submit
 
 - name: Wait for the System Upgrade Controller Plan to complete
@@ -60,10 +52,14 @@
   register: rke2lifecycle_upgrade_plan
   changed_when: false
   until:
-    - rke2lifecycle_upgrade_plan.resources | length == 1
-    - rke2lifecycle_upgrade_plan.resources[0].status.latestVersion | default('') == rke2lifecycle_target_version
+    - rke2lifecycle_upgrade_plan.get('resources', []) | length == 1
     - >-
-      rke2lifecycle_upgrade_plan.resources[0].status.conditions | default([])
+      (rke2lifecycle_upgrade_plan.get('resources', [])
+       | first | default({})).get('status', {}).get('latestVersion', '')
+      == (rke2lifecycle_target_version | replace('+', '-'))
+    - >-
+      (rke2lifecycle_upgrade_plan.get('resources', [])
+       | first | default({})).get('status', {}).get('conditions', [])
       | selectattr('type', 'equalto', 'Complete')
       | selectattr('status', 'equalto', 'True')
       | list | length == 1

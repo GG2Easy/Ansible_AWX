@@ -23,6 +23,7 @@ rke2lifecycle_upgrade_namespace: cattle-system
 rke2lifecycle_upgrade_plan_name: awx-rke2-server-upgrade
 rke2lifecycle_upgrade_service_account_name: awx-rke2-upgrader
 rke2lifecycle_upgrade_concurrency: 1
+rke2lifecycle_upgrade_cordon: false
 rke2lifecycle_upgrade_timeout_seconds: 2400
 rke2lifecycle_upgrade_poll_seconds: 10
 rke2lifecycle_health_timeout_seconds: 600
