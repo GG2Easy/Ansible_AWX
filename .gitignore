@@ -1,5 +1,0 @@
-.venv/
-.ansible/
-*.retry
-*.log
-.awx-rancher-credential.json
