@@ -1,0 +1,12 @@
+---
+- name: Create and verify an RKE2 snapshot without running an upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Run only the collection's snapshot tasks
+      ansible.builtin.include_role:
+        name: k8s.rke2lifecycle.rke2lifecycle
+        tasks_from: snapshot.yml

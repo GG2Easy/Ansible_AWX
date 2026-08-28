@@ -1,0 +1,17 @@
+---
+apiVersion: operation.cattle.io/v1alpha1
+kind: ETCDSnapshotSave
+metadata:
+  name: "{{ rke2lifecycle_snapshot_operation_name }}"
+  namespace: "{{ rke2lifecycle_cluster_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    app.kubernetes.io/part-of: rke2-upgrade
+spec:
+  args:
+    name: "{{ rke2lifecycle_snapshot_name }}"
+  clusterRef:
+    apiVersion: management.cattle.io/v3
+    kind: Cluster
+    name: "{{ rke2lifecycle_cluster_id }}"
+  ttl: {{ rke2lifecycle_snapshot_operation_ttl_seconds | int }}

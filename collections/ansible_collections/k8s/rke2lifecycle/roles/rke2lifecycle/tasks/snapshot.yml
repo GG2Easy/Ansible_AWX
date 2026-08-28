@@ -28,29 +28,28 @@
          | regex_replace('[^a-z0-9-]', '-')
          | truncate(63, true, '') }}
 
+- name: Render the snapshot custom resource with native YAML types
+  ansible.builtin.set_fact:
+    rke2lifecycle_snapshot_definition: >-
+      {{ lookup('ansible.builtin.template', 'etcd_snapshot_save.yml.j2')
+         | from_yaml }}
+
+- name: Validate the rendered snapshot custom resource
+  ansible.builtin.assert:
+    that:
+      - rke2lifecycle_snapshot_definition is mapping
+      - rke2lifecycle_snapshot_definition.spec.ttl is integer
+    fail_msg: >-
+      The ETCDSnapshotSave manifest must render spec.ttl as an integer.
+    quiet: true
+
 - name: Request an on-demand snapshot from Rancher
   kubernetes.core.k8s:
     host: "{{ rke2lifecycle_api_url }}"
     api_key: "{{ rke2lifecycle_api_key }}"
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
     state: present
-    definition:
-      apiVersion: operation.cattle.io/v1alpha1
-      kind: ETCDSnapshotSave
-      metadata:
-        name: "{{ rke2lifecycle_snapshot_operation_name }}"
-        namespace: "{{ rke2lifecycle_cluster_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: ansible
-          app.kubernetes.io/part-of: rke2-upgrade
-      spec:
-        args:
-          name: "{{ rke2lifecycle_snapshot_name }}"
-        clusterRef:
-          apiVersion: management.cattle.io/v3
-          kind: Cluster
-          name: "{{ rke2lifecycle_cluster_id }}"
-        ttl: "{{ rke2lifecycle_snapshot_operation_ttl_seconds | int }}"
+    definition: "{{ rke2lifecycle_snapshot_definition }}"
   register: rke2lifecycle_snapshot_request
 
 - name: Wait for Rancher to finish the snapshot operation
