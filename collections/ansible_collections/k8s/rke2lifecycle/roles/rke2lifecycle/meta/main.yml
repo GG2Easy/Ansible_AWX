@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: rke2lifecycle
+  author: GG2Easy
+  description: Snapshot and upgrade an imported Rancher-managed RKE2 cluster
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+  galaxy_tags:
+    - kubernetes
+    - rancher
+    - rke2
+    - upgrade
+
+dependencies: []

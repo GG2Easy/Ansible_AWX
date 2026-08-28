@@ -1,9 +1,9 @@
 ---
-- name: Perform upgrade on Rancher downstream clusters
-  hosts: all
+- name: Snapshot and upgrade a Rancher-managed RKE2 cluster
+  hosts: localhost
   connection: local
   gather_facts: false
-  environment:
-    K8S_AUTH_HOST: "{{ rancher_url }}/k8s/clustres/{{ clusterid }}"
+  any_errors_fatal: true
+
   roles:
     - role: k8s.rke2lifecycle.rke2lifecycle

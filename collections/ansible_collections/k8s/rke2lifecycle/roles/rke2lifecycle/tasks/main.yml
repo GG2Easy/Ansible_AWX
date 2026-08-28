@@ -1,0 +1,12 @@
+---
+- name: Validate credentials, cluster health, and requested version
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Create and verify the pre-upgrade etcd snapshot
+  ansible.builtin.import_tasks: snapshot.yml
+
+- name: Submit and monitor the RKE2 upgrade
+  ansible.builtin.import_tasks: upgrade.yml
+
+- name: Verify the completed upgrade
+  ansible.builtin.import_tasks: verify.yml

@@ -1,0 +1,70 @@
+---
+argument_specs:
+  main:
+    short_description: Snapshot and upgrade a Rancher-managed RKE2 cluster
+    description:
+      - Validates cluster health and the requested release.
+      - Creates an etcd snapshot before applying an RKE2 upgrade Plan.
+      - Waits for the node and Rancher to return to a healthy state.
+    options:
+      rke2lifecycle_api_url:
+        type: str
+        description: Rancher base URL, without a trailing slash.
+      rke2lifecycle_api_key:
+        type: str
+        no_log: true
+        description: Rancher bearer token.
+      rke2lifecycle_validate_certs:
+        type: bool
+        description: Whether to validate Rancher's TLS certificate.
+      rke2lifecycle_cluster_id:
+        type: str
+        description: Rancher downstream cluster identifier.
+      rke2lifecycle_cluster_namespace:
+        type: str
+        description: Namespace containing Rancher snapshot operations.
+      rke2lifecycle_downstream_api_url:
+        type: str
+        description: Rancher Kubernetes proxy URL for the downstream cluster.
+      rke2lifecycle_target_version:
+        type: str
+        description: Exact RKE2 release, for example v1.35.7+rke2r1.
+      rke2lifecycle_expected_node_count:
+        type: int
+        description: Required downstream node count.
+      rke2lifecycle_verify_release_tag:
+        type: bool
+        description: Verify that the target tag exists in the RKE2 GitHub repository.
+      rke2lifecycle_snapshot_operation_ttl_seconds:
+        type: int
+        description: Rancher snapshot operation retention period.
+      rke2lifecycle_snapshot_timeout_seconds:
+        type: int
+        description: Maximum wait for snapshot completion.
+      rke2lifecycle_snapshot_poll_seconds:
+        type: int
+        description: Snapshot status polling interval.
+      rke2lifecycle_upgrade_namespace:
+        type: str
+        description: Namespace containing the System Upgrade Controller Plan.
+      rke2lifecycle_upgrade_plan_name:
+        type: str
+        description: Name of the RKE2 upgrade Plan.
+      rke2lifecycle_upgrade_service_account_name:
+        type: str
+        description: Service account used by the upgrade Plan.
+      rke2lifecycle_upgrade_concurrency:
+        type: int
+        description: Maximum number of nodes upgraded concurrently.
+      rke2lifecycle_upgrade_timeout_seconds:
+        type: int
+        description: Maximum wait for Plan completion.
+      rke2lifecycle_upgrade_poll_seconds:
+        type: int
+        description: Upgrade Plan polling interval.
+      rke2lifecycle_health_timeout_seconds:
+        type: int
+        description: Maximum wait for post-upgrade cluster health.
+      rke2lifecycle_health_poll_seconds:
+        type: int
+        description: Post-upgrade health polling interval.
