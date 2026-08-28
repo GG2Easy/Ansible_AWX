@@ -1,9 +1,9 @@
 ---
 - name: Snapshot and upgrade a Rancher-managed RKE2 cluster
-  hosts: localhost
-  connection: local
+  hosts: all
+  run_once: true
   gather_facts: false
-  any_errors_fatal: true
+  connection: local
   enviroment:
     K8S_AUTH_HOST: "{{ rancher_url }}/k8s/clusters/{{ clusterid }}"
   roles:
