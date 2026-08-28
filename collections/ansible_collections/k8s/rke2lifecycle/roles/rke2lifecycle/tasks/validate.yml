@@ -91,32 +91,64 @@
   ansible.builtin.set_fact:
     rke2lifecycle_current_version: "{{ rke2lifecycle_nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"
 
-- name: Parse current and requested version components
+- name: Parse current and requested version components as integers
   ansible.builtin.set_fact:
-    rke2lifecycle_current_version_parts: >-
-      {{ rke2lifecycle_current_version
-         | regex_findall('^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$')
-         | first }}
-    rke2lifecycle_target_version_parts: >-
-      {{ rke2lifecycle_target_version
-         | regex_findall('^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$')
-         | first }}
+    rke2lifecycle_current_version_major: >-
+      {{ (rke2lifecycle_current_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[0] | int }}
+    rke2lifecycle_current_version_minor: >-
+      {{ (rke2lifecycle_current_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[1] | int }}
+    rke2lifecycle_current_version_patch: >-
+      {{ (rke2lifecycle_current_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[2] | int }}
+    rke2lifecycle_current_version_revision: >-
+      {{ (rke2lifecycle_current_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[3] | int }}
+    rke2lifecycle_target_version_major: >-
+      {{ (rke2lifecycle_target_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[0] | int }}
+    rke2lifecycle_target_version_minor: >-
+      {{ (rke2lifecycle_target_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[1] | int }}
+    rke2lifecycle_target_version_patch: >-
+      {{ (rke2lifecycle_target_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[2] | int }}
+    rke2lifecycle_target_version_revision: >-
+      {{ (rke2lifecycle_target_version
+          | regex_findall(rke2lifecycle_version_pattern)
+          | first)[3] | int }}
+  vars:
+    rke2lifecycle_version_pattern: '^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$'
 
 - name: Enforce a forward, sequential RKE2 upgrade
   ansible.builtin.assert:
     that:
       - rke2lifecycle_target_version != rke2lifecycle_current_version
-      - (rke2lifecycle_target_version_parts[0] | int) == (rke2lifecycle_current_version_parts[0] | int)
-      - (rke2lifecycle_target_version_parts[1] | int) >= (rke2lifecycle_current_version_parts[1] | int)
-      - (rke2lifecycle_target_version_parts[1] | int) <= ((rke2lifecycle_current_version_parts[1] | int) + 1)
+      - rke2lifecycle_target_version_major | int == rke2lifecycle_current_version_major | int
+      - rke2lifecycle_target_version_minor | int >= rke2lifecycle_current_version_minor | int
+      - rke2lifecycle_target_version_minor | int <= (rke2lifecycle_current_version_minor | int) + 1
       - >-
-        ((rke2lifecycle_target_version_parts[1] | int) > (rke2lifecycle_current_version_parts[1] | int))
-        or
-        ((rke2lifecycle_target_version_parts[2] | int) > (rke2lifecycle_current_version_parts[2] | int))
+        (rke2lifecycle_target_version_minor | int) > (rke2lifecycle_current_version_minor | int)
         or
         (
-          (rke2lifecycle_target_version_parts[2] | int) == (rke2lifecycle_current_version_parts[2] | int)
-          and (rke2lifecycle_target_version_parts[3] | int) > (rke2lifecycle_current_version_parts[3] | int)
+          (rke2lifecycle_target_version_minor | int) == (rke2lifecycle_current_version_minor | int)
+          and
+          (
+            (rke2lifecycle_target_version_patch | int) > (rke2lifecycle_current_version_patch | int)
+            or
+            (
+              (rke2lifecycle_target_version_patch | int) == (rke2lifecycle_current_version_patch | int)
+              and (rke2lifecycle_target_version_revision | int) > (rke2lifecycle_current_version_revision | int)
+            )
+          )
         )
     fail_msg: >-
       Refusing {{ rke2lifecycle_current_version }} -> {{ rke2lifecycle_target_version }}.
