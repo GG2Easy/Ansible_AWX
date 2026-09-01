@@ -1,113 +1,95 @@
 ---
-- name: Read existing downstream snapshot records
-  kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
+- name: Read current Rancher snapshots
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_snapshots_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    api_version: k3s.cattle.io/v1
-    kind: ETCDSnapshotFile
-  register: rke2lifecycle_snapshot_files_before
+    return_content: true
+    status_code: 200
+  register: rke2lifecycle_snapshots_before
   changed_when: false
+  no_log: true
 
-- name: Choose a stable maintenance run identifier
-  ansible.builtin.set_fact:
-    rke2lifecycle_maintenance_run_id: >-
-      {{ lookup('ansible.builtin.env', 'AWX_JOB_ID')
-         | default(now(utc=true, fmt='%Y%m%d%H%M%S'), true) }}
-
-- name: Build snapshot and operation names
-  ansible.builtin.set_fact:
-    rke2lifecycle_snapshot_name: >-
-      {{ ('awx-pre-upgrade-' ~ rke2lifecycle_maintenance_run_id)
-         | lower
-         | regex_replace('[^a-z0-9-]', '-')
-         | truncate(48, true, '') }}
-    rke2lifecycle_snapshot_operation_name: >-
-      {{ ('awx-pre-upgrade-' ~ rke2lifecycle_maintenance_run_id)
-         | lower
-         | regex_replace('[^a-z0-9-]', '-')
-         | truncate(63, true, '') }}
-
-- name: Render the snapshot custom resource with native YAML types
-  ansible.builtin.set_fact:
-    rke2lifecycle_snapshot_definition: >-
-      {{ lookup('ansible.builtin.template', 'etcd_snapshot_save.yml.j2')
-         | from_yaml }}
-
-- name: Validate the rendered snapshot custom resource
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_snapshot_definition is mapping
-      - rke2lifecycle_snapshot_definition.spec.ttl is integer
-    fail_msg: >-
-      The ETCDSnapshotSave manifest must render spec.ttl as an integer.
-    quiet: true
-
-- name: Request an on-demand snapshot from Rancher
-  kubernetes.core.k8s:
-    host: "{{ rke2lifecycle_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
+- name: Read the Rancher provisioning cluster
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    state: present
-    definition: "{{ rke2lifecycle_snapshot_definition }}"
-  register: rke2lifecycle_snapshot_request
-
-- name: Wait for Rancher to finish the snapshot operation
-  kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    api_version: operation.cattle.io/v1alpha1
-    kind: ETCDSnapshotSave
-    namespace: "{{ rke2lifecycle_cluster_namespace }}"
-    name: "{{ rke2lifecycle_snapshot_operation_name }}"
-  register: rke2lifecycle_snapshot_operation
+    return_content: true
+    status_code: 200
+  register: rke2lifecycle_provisioning_cluster
   changed_when: false
-  until:
-    - rke2lifecycle_snapshot_operation.resources | length == 1
-    - >-
-      rke2lifecycle_snapshot_operation.resources[0].status.phase | default('')
-      in ['Succeeded', 'Failed', 'Canceled']
+  no_log: true
+
+- name: Prepare the Rancher snapshot request
+  ansible.builtin.set_fact:
+    rke2lifecycle_snapshot_generation: >-
+      {{ rke2lifecycle_provisioning_cluster.json.spec.rkeConfig
+         .get('etcdSnapshotCreate', {}).get('generation', 0) | int + 1 }}
+    rke2lifecycle_snapshot_names_before: >-
+      {{ rke2lifecycle_snapshots_before.json.get('data', [])
+         | map(attribute='metadata.name') | list }}
+
+- name: Trigger the snapshot through the Rancher API
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
+    body_format: json
+    body:
+      apiVersion: "{{ rke2lifecycle_provisioning_cluster.json.apiVersion }}"
+      kind: "{{ rke2lifecycle_provisioning_cluster.json.kind }}"
+      metadata:
+        name: "{{ rke2lifecycle_cluster_name }}"
+        namespace: "{{ rke2lifecycle_provisioning_namespace }}"
+        resourceVersion: "{{ rke2lifecycle_provisioning_cluster.json.metadata.resourceVersion }}"
+      spec: >-
+        {{ rke2lifecycle_provisioning_cluster.json.spec
+           | combine({'rkeConfig': {'etcdSnapshotCreate': {
+               'generation': rke2lifecycle_snapshot_generation | int
+             }}}, recursive=true) }}
+    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    status_code: 200
+  no_log: true
+
+- name: Wait for Rancher to register the new snapshot
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_snapshots_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
+    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    return_content: true
+    status_code: 200
+  register: rke2lifecycle_snapshots_after
+  changed_when: false
+  no_log: true
+  until: >-
+    rke2lifecycle_snapshots_after.json.get('data', [])
+    | map(attribute='metadata.name')
+    | difference(rke2lifecycle_snapshot_names_before)
+    | length > 0
   retries: "{{ (rke2lifecycle_snapshot_timeout_seconds / rke2lifecycle_snapshot_poll_seconds) | int }}"
   delay: "{{ rke2lifecycle_snapshot_poll_seconds | int }}"
 
-- name: Require a successful Rancher snapshot operation
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_snapshot_operation.resources[0].status.phase == 'Succeeded'
-    fail_msg: >-
-      Snapshot operation {{ rke2lifecycle_snapshot_operation_name }} ended in
-      {{ rke2lifecycle_snapshot_operation.resources[0].status.phase }}:
-      {{ rke2lifecycle_snapshot_operation.resources[0].status.conditions | default([]) }}
-
-- name: Confirm the snapshot file is registered downstream
-  kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    api_version: k3s.cattle.io/v1
-    kind: ETCDSnapshotFile
-  register: rke2lifecycle_snapshot_files_after
-  changed_when: false
-  vars:
-    rke2lifecycle_matching_snapshot_files: >-
-      {{ rke2lifecycle_snapshot_files_after.resources
-         | selectattr('metadata.name', 'search', rke2lifecycle_snapshot_name | regex_escape)
-         | list }}
-  until: rke2lifecycle_matching_snapshot_files | length > 0
-  retries: 30
-  delay: 2
-
-- name: Record verified snapshot metadata
+- name: Record the verified pre-upgrade snapshot
   ansible.builtin.set_fact:
     rke2lifecycle_verified_snapshot_files: >-
-      {{ rke2lifecycle_snapshot_files_after.resources
-         | selectattr('metadata.name', 'search', rke2lifecycle_snapshot_name | regex_escape)
+      {{ rke2lifecycle_snapshots_after.json.data
+         | rejectattr('metadata.name', 'in', rke2lifecycle_snapshot_names_before)
          | list }}
 
 - name: Report the verified pre-upgrade snapshot
   ansible.builtin.debug:
     msg:
-      operation: "{{ rke2lifecycle_snapshot_operation_name }}"
-      snapshot_prefix: "{{ rke2lifecycle_snapshot_name }}"
-      files: "{{ rke2lifecycle_verified_snapshot_files | map(attribute='metadata.name') | list }}"
+      generation: "{{ rke2lifecycle_snapshot_generation }}"
+      snapshots: "{{ rke2lifecycle_verified_snapshot_files | map(attribute='metadata.name') | list }}"

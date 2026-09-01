@@ -1,20 +1,4 @@
 ---
-- name: Read the completed System Upgrade Controller Plan
-  kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    api_version: upgrade.cattle.io/v1
-    kind: Plan
-    namespace: "{{ rke2lifecycle_upgrade_namespace }}"
-    name: "{{ rke2lifecycle_upgrade_plan_name }}"
-  register: rke2lifecycle_upgrade_plan
-  changed_when: false
-  until:
-    - rke2lifecycle_upgrade_plan.get('resources', []) | length == 1
-  retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
-  delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
-
 - name: Wait for all RKE2 nodes to return Ready on the requested version
   kubernetes.core.k8s_info:
     host: "{{ rke2lifecycle_downstream_api_url }}"
@@ -38,6 +22,28 @@
       | selectattr('type', 'equalto', 'Ready')
       | selectattr('status', 'equalto', 'True')
       | list | length == 1
+  retries: "{{ (rke2lifecycle_upgrade_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
+  delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
+
+- name: Wait for Rancher to reconcile the requested version
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
+    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    return_content: true
+    status_code: 200
+  register: rke2lifecycle_provisioning_cluster_after
+  changed_when: false
+  no_log: true
+  until:
+    - rke2lifecycle_provisioning_cluster_after.json.spec.kubernetesVersion == rke2lifecycle_target_version
+    - rke2lifecycle_provisioning_cluster_after.json.status.ready | default(false) | bool
+    - >-
+      rke2lifecycle_provisioning_cluster_after.json.status.observedGeneration | int
+      == rke2lifecycle_provisioning_cluster_after.json.metadata.generation | int
   retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
   delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
 
@@ -54,38 +60,25 @@
   register: rke2lifecycle_cluster_after
   changed_when: false
   no_log: true
+  vars:
+    rke2lifecycle_management_conditions: >-
+      {{ rke2lifecycle_cluster_after.json.get('conditions', [])
+         | items2dict(key_name='type', value_name='status') }}
   until:
-    - rke2lifecycle_cluster_after.get('json', {}).get('state', '') == 'active'
-    - rke2lifecycle_cluster_after.get('json', {}).get('transitioning', '') == 'no'
-    - rke2lifecycle_cluster_after.get('json', {}).get('version', {}).get('gitVersion', '') == rke2lifecycle_target_version
+    - rke2lifecycle_cluster_after.json.id == rke2lifecycle_cluster_id
+    - rke2lifecycle_cluster_after.json.version.gitVersion == rke2lifecycle_target_version
+    - rke2lifecycle_management_conditions.get('Ready') == 'True'
+    - rke2lifecycle_management_conditions.get('Connected') == 'True'
   retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
   delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
-
-- name: Confirm the final Plan, node, and Rancher states
-  ansible.builtin.assert:
-    that:
-      - >-
-        rke2lifecycle_upgrade_plan.resources[0].status.latestVersion
-        == (rke2lifecycle_target_version | replace('+', '-'))
-      - rke2lifecycle_nodes_after.resources | length == rke2lifecycle_expected_node_count | int
-      - >-
-        rke2lifecycle_nodes_after.resources
-        | selectattr('status.nodeInfo.kubeletVersion', 'equalto', rke2lifecycle_target_version)
-        | list | length == rke2lifecycle_expected_node_count | int
-      - rke2lifecycle_cluster_after.json.id == rke2lifecycle_cluster_id
-      - rke2lifecycle_cluster_after.json.state == 'active'
-      - rke2lifecycle_cluster_after.json.transitioning == 'no'
-      - rke2lifecycle_cluster_after.json.version.gitVersion == rke2lifecycle_target_version
-    fail_msg: "RKE2 or Rancher did not converge to the requested healthy state."
 
 - name: Report the completed upgrade
   ansible.builtin.debug:
     msg:
-      rke2lifecycle_cluster: "{{ rke2lifecycle_cluster_id }}"
-      previous_version: "{{ rke2lifecycle_current_version | default('not collected in verify-only mode') }}"
+      cluster: "{{ rke2lifecycle_cluster_name }} ({{ rke2lifecycle_cluster_id }})"
+      previous_version: "{{ rke2lifecycle_current_version }}"
       requested_version: "{{ rke2lifecycle_target_version }}"
       node_versions: "{{ rke2lifecycle_nodes_after.resources | map(attribute='status.nodeInfo.kubeletVersion') | list }}"
-      snapshot_files: >-
+      snapshots: >-
         {{ rke2lifecycle_verified_snapshot_files | default([])
            | map(attribute='metadata.name') | list }}
-      plan: "{{ rke2lifecycle_upgrade_namespace }}/{{ rke2lifecycle_upgrade_plan_name }}"

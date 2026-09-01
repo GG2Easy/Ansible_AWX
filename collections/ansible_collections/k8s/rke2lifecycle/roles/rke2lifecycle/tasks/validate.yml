@@ -16,17 +16,15 @@
       - rke2lifecycle_api_url | regex_search('^https?://')
       - rke2lifecycle_cluster_id | length > 0
       - rke2lifecycle_expected_node_count | int == 1
-      - rke2lifecycle_upgrade_concurrency | int == 1
-      - rke2lifecycle_snapshot_operation_ttl_seconds | int > 0
+      - rke2lifecycle_cluster_name | length > 0
       - rke2lifecycle_snapshot_poll_seconds | int > 0
       - rke2lifecycle_snapshot_timeout_seconds | int >= rke2lifecycle_snapshot_poll_seconds | int
-      - rke2lifecycle_upgrade_poll_seconds | int > 0
-      - rke2lifecycle_upgrade_timeout_seconds | int >= rke2lifecycle_upgrade_poll_seconds | int
+      - rke2lifecycle_upgrade_timeout_seconds | int >= rke2lifecycle_health_poll_seconds | int
       - rke2lifecycle_health_poll_seconds | int > 0
       - rke2lifecycle_health_timeout_seconds | int >= rke2lifecycle_health_poll_seconds | int
     fail_msg: >-
-      Use an HTTP(S) Rancher URL, a non-empty cluster ID, and positive timeout
-      values. This guarded workflow supports exactly one node and concurrency 1.
+      Use an HTTP(S) Rancher URL, non-empty cluster ID and name, and positive
+      timeout values. This guarded workflow supports exactly one node.
     quiet: true
 
 - name: Validate the requested RKE2 version format
@@ -50,16 +48,16 @@
   register: rke2lifecycle_management_cluster
   changed_when: false
   no_log: true
-
-- name: Confirm Rancher knows and can reach the downstream cluster
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_management_cluster.json.id == rke2lifecycle_cluster_id
-      - rke2lifecycle_management_cluster.json.state == 'active'
-      - rke2lifecycle_management_cluster.json.transitioning == 'no'
-    fail_msg: >-
-      Rancher does not report cluster {{ rke2lifecycle_cluster_id }} as active and
-      non-transitioning.
+  until:
+    - rke2lifecycle_management_cluster.json.id == rke2lifecycle_cluster_id
+    - rke2lifecycle_management_conditions.get('Ready') == 'True'
+    - rke2lifecycle_management_conditions.get('Connected') == 'True'
+  retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
+  delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
+  vars:
+    rke2lifecycle_management_conditions: >-
+      {{ rke2lifecycle_management_cluster.json.get('conditions', [])
+         | items2dict(key_name='type', value_name='status') }}
 
 - name: Read downstream RKE2 nodes through the Rancher proxy
   kubernetes.core.k8s_info:
@@ -131,12 +129,13 @@
 - name: Enforce a forward, sequential RKE2 upgrade
   ansible.builtin.assert:
     that:
-      - rke2lifecycle_target_version != rke2lifecycle_current_version
       - rke2lifecycle_target_version_major | int == rke2lifecycle_current_version_major | int
       - rke2lifecycle_target_version_minor | int >= rke2lifecycle_current_version_minor | int
       - rke2lifecycle_target_version_minor | int <= (rke2lifecycle_current_version_minor | int) + 1
       - >-
         (rke2lifecycle_target_version_minor | int) > (rke2lifecycle_current_version_minor | int)
+        or
+        rke2lifecycle_target_version == rke2lifecycle_current_version
         or
         (
           (rke2lifecycle_target_version_minor | int) == (rke2lifecycle_current_version_minor | int)

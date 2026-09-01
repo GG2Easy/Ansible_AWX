@@ -1,67 +1,39 @@
 ---
-- name: Ensure the upgrade job ServiceAccount exists
-  kubernetes.core.k8s:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
+- name: Read the latest Rancher provisioning cluster
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ServiceAccount
-      metadata:
-        name: "{{ rke2lifecycle_upgrade_service_account_name }}"
-        namespace: "{{ rke2lifecycle_upgrade_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: ansible
-          app.kubernetes.io/part-of: rke2-upgrade
-
-- name: Render the upgrade Plan with native YAML types
-  ansible.builtin.set_fact:
-    rke2lifecycle_upgrade_plan_definition: >-
-      {{ lookup('ansible.builtin.template', 'rke2_upgrade_plan.yml.j2')
-         | from_yaml }}
-
-- name: Validate the rendered upgrade Plan
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_upgrade_plan_definition is mapping
-      - rke2lifecycle_upgrade_plan_definition.spec.concurrency is integer
-      - rke2lifecycle_upgrade_plan_definition.spec.cordon is boolean
-    fail_msg: >-
-      The RKE2 upgrade Plan must contain native integer and boolean fields.
-    quiet: true
-
-- name: Submit the RKE2 server upgrade Plan
-  kubernetes.core.k8s:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    state: present
-    definition: "{{ rke2lifecycle_upgrade_plan_definition }}"
-  register: rke2lifecycle_upgrade_plan_submit
-
-- name: Wait for the System Upgrade Controller Plan to complete
-  kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    api_version: upgrade.cattle.io/v1
-    kind: Plan
-    namespace: "{{ rke2lifecycle_upgrade_namespace }}"
-    name: "{{ rke2lifecycle_upgrade_plan_name }}"
-  register: rke2lifecycle_upgrade_plan
+    return_content: true
+    status_code: 200
+  register: rke2lifecycle_provisioning_cluster
   changed_when: false
-  until:
-    - rke2lifecycle_upgrade_plan.get('resources', []) | length == 1
-    - >-
-      (rke2lifecycle_upgrade_plan.get('resources', [])
-       | first | default({})).get('status', {}).get('latestVersion', '')
-      == (rke2lifecycle_target_version | replace('+', '-'))
-    - >-
-      (rke2lifecycle_upgrade_plan.get('resources', [])
-       | first | default({})).get('status', {}).get('conditions', [])
-      | selectattr('type', 'equalto', 'Complete')
-      | selectattr('status', 'equalto', 'True')
-      | list | length == 1
-  retries: "{{ (rke2lifecycle_upgrade_timeout_seconds / rke2lifecycle_upgrade_poll_seconds) | int }}"
-  delay: "{{ rke2lifecycle_upgrade_poll_seconds | int }}"
+  no_log: true
+
+- name: Request the RKE2 version through the Rancher API
+  ansible.builtin.uri:
+    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
+      Accept: application/json
+    body_format: json
+    body:
+      apiVersion: "{{ rke2lifecycle_provisioning_cluster.json.apiVersion }}"
+      kind: "{{ rke2lifecycle_provisioning_cluster.json.kind }}"
+      metadata:
+        name: "{{ rke2lifecycle_cluster_name }}"
+        namespace: "{{ rke2lifecycle_provisioning_namespace }}"
+        resourceVersion: "{{ rke2lifecycle_provisioning_cluster.json.metadata.resourceVersion }}"
+      spec: >-
+        {{ rke2lifecycle_provisioning_cluster.json.spec
+           | combine({'kubernetesVersion': rke2lifecycle_target_version}, recursive=true) }}
+    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    status_code: 200
+  changed_when: >-
+    rke2lifecycle_provisioning_cluster.json.spec.kubernetesVersion
+    != rke2lifecycle_target_version
+  no_log: true

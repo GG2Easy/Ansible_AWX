@@ -6,10 +6,11 @@
 
 - name: Create and verify the pre-upgrade etcd snapshot
   ansible.builtin.import_tasks: snapshot.yml
+  when: rke2lifecycle_current_version != rke2lifecycle_target_version
   tags:
     - snapshot
 
-- name: Submit and monitor the RKE2 upgrade
+- name: Request the RKE2 upgrade through Rancher
   ansible.builtin.import_tasks: upgrade.yml
   tags:
     - upgrade

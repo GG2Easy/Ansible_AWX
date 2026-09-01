@@ -6,25 +6,25 @@ rke2lifecycle_api_url: >-
 rke2lifecycle_api_key: >-
   {{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') | default('', true) }}
 rke2lifecycle_validate_certs: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
-rke2lifecycle_cluster_id: "{{ clusterid | default('c-n6thr', true) }}"
-rke2lifecycle_cluster_namespace: "{{ rke2lifecycle_cluster_id }}"
+rke2lifecycle_cluster_id: "{{ clusterid | default('', true) }}"
+rke2lifecycle_cluster_name: "{{ clustername | default('', true) }}"
+rke2lifecycle_provisioning_namespace: fleet-default
 rke2lifecycle_downstream_api_url: "{{ rke2lifecycle_api_url }}/k8s/clusters/{{ rke2lifecycle_cluster_id }}"
+rke2lifecycle_provisioning_cluster_url: >-
+  {{ rke2lifecycle_api_url }}/v1/provisioning.cattle.io.clusters/{{ rke2lifecycle_provisioning_namespace }}/{{ rke2lifecycle_cluster_name }}
+rke2lifecycle_snapshots_url: >-
+  {{ rke2lifecycle_api_url }}/v1/rke.cattle.io.etcdsnapshots/{{ rke2lifecycle_provisioning_namespace
+  }}?labelSelector=rke.cattle.io%2Fcluster-name%3D{{ rke2lifecycle_cluster_name
+  | urlencode }}
 
 # Keep the old survey variable as a compatibility alias.
 rke2lifecycle_target_version: "{{ rke2_target_version | default('', true) }}"
 rke2lifecycle_expected_node_count: 1
 rke2lifecycle_verify_release_tag: true
 
-rke2lifecycle_snapshot_operation_ttl_seconds: 86400
 rke2lifecycle_snapshot_timeout_seconds: 900
 rke2lifecycle_snapshot_poll_seconds: 5
 
-rke2lifecycle_upgrade_namespace: cattle-system
-rke2lifecycle_upgrade_plan_name: awx-rke2-server-upgrade
-rke2lifecycle_upgrade_service_account_name: awx-rke2-upgrader
-rke2lifecycle_upgrade_concurrency: 1
-rke2lifecycle_upgrade_cordon: false
 rke2lifecycle_upgrade_timeout_seconds: 2400
-rke2lifecycle_upgrade_poll_seconds: 10
 rke2lifecycle_health_timeout_seconds: 600
 rke2lifecycle_health_poll_seconds: 10
