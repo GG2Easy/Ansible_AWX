@@ -1,17 +1,13 @@
 ---
-- name: Read current Rancher snapshots
-  ansible.builtin.uri:
-    url: "{{ rke2lifecycle_snapshots_url }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
-      Accept: application/json
+- name: Read current downstream snapshot records
+  kubernetes.core.k8s_info:
+    host: "{{ rke2lifecycle_downstream_api_url }}"
+    api_key: "{{ rke2lifecycle_api_key }}"
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    return_content: true
-    status_code: 200
-  register: rke2lifecycle_snapshots_before
+    api_version: k3s.cattle.io/v1
+    kind: ETCDSnapshotFile
+  register: rke2lifecycle_snapshot_files_before
   changed_when: false
-  no_log: true
 
 - name: Read the Rancher provisioning cluster
   ansible.builtin.uri:
@@ -33,7 +29,7 @@
       {{ rke2lifecycle_provisioning_cluster.json.spec.rkeConfig
          .get('etcdSnapshotCreate', {}).get('generation', 0) | int + 1 }}
     rke2lifecycle_snapshot_names_before: >-
-      {{ rke2lifecycle_snapshots_before.json.get('data', [])
+      {{ rke2lifecycle_snapshot_files_before.resources
          | map(attribute='metadata.name') | list }}
 
 - name: Trigger the snapshot through the Rancher API
@@ -60,21 +56,17 @@
     status_code: 200
   no_log: true
 
-- name: Wait for Rancher to register the new snapshot
-  ansible.builtin.uri:
-    url: "{{ rke2lifecycle_snapshots_url }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
-      Accept: application/json
+- name: Wait for the downstream cluster to register the new snapshot
+  kubernetes.core.k8s_info:
+    host: "{{ rke2lifecycle_downstream_api_url }}"
+    api_key: "{{ rke2lifecycle_api_key }}"
     validate_certs: "{{ rke2lifecycle_validate_certs }}"
-    return_content: true
-    status_code: 200
-  register: rke2lifecycle_snapshots_after
+    api_version: k3s.cattle.io/v1
+    kind: ETCDSnapshotFile
+  register: rke2lifecycle_snapshot_files_after
   changed_when: false
-  no_log: true
   until: >-
-    rke2lifecycle_snapshots_after.json.get('data', [])
+    rke2lifecycle_snapshot_files_after.resources
     | map(attribute='metadata.name')
     | difference(rke2lifecycle_snapshot_names_before)
     | length > 0
@@ -84,7 +76,7 @@
 - name: Record the verified pre-upgrade snapshot
   ansible.builtin.set_fact:
     rke2lifecycle_verified_snapshot_files: >-
-      {{ rke2lifecycle_snapshots_after.json.data
+      {{ rke2lifecycle_snapshot_files_after.resources
          | rejectattr('metadata.name', 'in', rke2lifecycle_snapshot_names_before)
          | list }}
 

@@ -12,10 +12,6 @@ rke2lifecycle_provisioning_namespace: fleet-default
 rke2lifecycle_downstream_api_url: "{{ rke2lifecycle_api_url }}/k8s/clusters/{{ rke2lifecycle_cluster_id }}"
 rke2lifecycle_provisioning_cluster_url: >-
   {{ rke2lifecycle_api_url }}/v1/provisioning.cattle.io.clusters/{{ rke2lifecycle_provisioning_namespace }}/{{ rke2lifecycle_cluster_name }}
-rke2lifecycle_snapshots_url: >-
-  {{ rke2lifecycle_api_url }}/v1/rke.cattle.io.etcdsnapshots/{{ rke2lifecycle_provisioning_namespace
-  }}?labelSelector=rke.cattle.io%2Fcluster-name%3D{{ rke2lifecycle_cluster_name
-  | urlencode }}
 
 # Keep the old survey variable as a compatibility alias.
 rke2lifecycle_target_version: "{{ rke2_target_version | default('', true) }}"
