@@ -1,26 +1,17 @@
 ---
-rke2lifecycle_api_url: >-
-  {{ rancher_url
-     | default(lookup('ansible.builtin.env', 'K8S_AUTH_HOST'), true)
-     | regex_replace('/+$', '') }}
-rke2lifecycle_api_key: >-
-  {{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') | default('', true) }}
-rke2lifecycle_validate_certs: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
-rke2lifecycle_cluster_id: "{{ clusterid | default('', true) }}"
-rke2lifecycle_cluster_name: "{{ clustername | default('', true) }}"
-rke2lifecycle_provisioning_namespace: fleet-default
-rke2lifecycle_downstream_api_url: "{{ rke2lifecycle_api_url }}/k8s/clusters/{{ rke2lifecycle_cluster_id }}"
-rke2lifecycle_provisioning_cluster_url: >-
-  {{ rke2lifecycle_api_url }}/v1/provisioning.cattle.io.clusters/{{ rke2lifecycle_provisioning_namespace }}/{{ rke2lifecycle_cluster_name }}
+rke2_api_key: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') | default('', true) }}"
+rke2_verify_ssl: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
+rke2_headers:
+  Authorization: "Bearer {{ rke2_api_key }}"
+  Accept: application/json
 
-# Keep the old survey variable as a compatibility alias.
-rke2lifecycle_target_version: "{{ rke2_target_version | default('', true) }}"
-rke2lifecycle_expected_node_count: 1
-rke2lifecycle_verify_release_tag: true
+rke2_base_url: "{{ rancher_url | regex_replace('/+$', '') }}"
+rke2_downstream_url: "{{ rke2_base_url }}/k8s/clusters/{{ clusterid }}"
+rke2_cluster_url: >-
+  {{ rke2_base_url }}/v1/provisioning.cattle.io.clusters/fleet-default/{{ clustername }}
 
-rke2lifecycle_snapshot_timeout_seconds: 900
-rke2lifecycle_snapshot_poll_seconds: 5
-
-rke2lifecycle_upgrade_timeout_seconds: 2400
-rke2lifecycle_health_timeout_seconds: 600
-rke2lifecycle_health_poll_seconds: 10
+rke2_snapshot_retries: 180
+rke2_snapshot_delay: 5
+rke2_upgrade_retries: 240
+rke2_health_retries: 60
+rke2_health_delay: 10

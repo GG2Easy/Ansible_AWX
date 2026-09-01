@@ -1,39 +1,32 @@
 ---
 - name: Read the latest Rancher provisioning cluster
   ansible.builtin.uri:
-    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
-      Accept: application/json
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    url: "{{ rke2_cluster_url }}"
+    headers: "{{ rke2_headers }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
     return_content: true
     status_code: 200
-  register: rke2lifecycle_provisioning_cluster
+  register: provisioning_cluster
   changed_when: false
   no_log: true
 
-- name: Request the RKE2 version through the Rancher API
+- name: Request the RKE2 version through Rancher
   ansible.builtin.uri:
-    url: "{{ rke2lifecycle_provisioning_cluster_url }}"
+    url: "{{ rke2_cluster_url }}"
     method: PUT
-    headers:
-      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
-      Accept: application/json
+    headers: "{{ rke2_headers }}"
     body_format: json
     body:
-      apiVersion: "{{ rke2lifecycle_provisioning_cluster.json.apiVersion }}"
-      kind: "{{ rke2lifecycle_provisioning_cluster.json.kind }}"
+      apiVersion: "{{ provisioning_cluster.json.apiVersion }}"
+      kind: "{{ provisioning_cluster.json.kind }}"
       metadata:
-        name: "{{ rke2lifecycle_cluster_name }}"
-        namespace: "{{ rke2lifecycle_provisioning_namespace }}"
-        resourceVersion: "{{ rke2lifecycle_provisioning_cluster.json.metadata.resourceVersion }}"
+        name: "{{ clustername }}"
+        namespace: fleet-default
+        resourceVersion: "{{ provisioning_cluster.json.metadata.resourceVersion }}"
       spec: >-
-        {{ rke2lifecycle_provisioning_cluster.json.spec
-           | combine({'kubernetesVersion': rke2lifecycle_target_version}, recursive=true) }}
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+        {{ provisioning_cluster.json.spec
+           | combine({'kubernetesVersion': rke2_target_version}, recursive=true) }}
+    validate_certs: "{{ rke2_verify_ssl }}"
     status_code: 200
-  changed_when: >-
-    rke2lifecycle_provisioning_cluster.json.spec.kubernetesVersion
-    != rke2lifecycle_target_version
+  changed_when: provisioning_cluster.json.spec.kubernetesVersion != rke2_target_version
   no_log: true

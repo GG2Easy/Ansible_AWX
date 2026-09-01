@@ -1,168 +1,94 @@
 ---
-- name: Validate the AWX Kubernetes credential inputs
+- name: Validate required inventory and survey values
   ansible.builtin.assert:
     that:
-      - rke2lifecycle_api_url | length > 0
-      - rke2lifecycle_api_key | length > 0
+      - rancher_url | default('') | regex_search('^https?://')
+      - clusterid | default('') | length > 0
+      - clustername | default('') | length > 0
+      - >-
+        rke2_target_version | default('')
+        | regex_search('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
     fail_msg: >-
-      Attach an OpenShift or Kubernetes API Bearer Token credential containing
-      the Rancher endpoint and bearer token.
+      Set rancher_url, clusterid, clustername, and an exact
+      rke2_target_version such as v1.36.3+rke2r1.
+
+- name: Validate the Rancher API credential
+  ansible.builtin.assert:
+    that: rke2_api_key | length > 0
+    fail_msg: Attach the Rancher admin API key credential to the AWX template.
     quiet: true
   no_log: true
 
-- name: Validate lifecycle safety and polling settings
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_api_url | regex_search('^https?://')
-      - rke2lifecycle_cluster_id | length > 0
-      - rke2lifecycle_expected_node_count | int == 1
-      - rke2lifecycle_cluster_name | length > 0
-      - rke2lifecycle_snapshot_poll_seconds | int > 0
-      - rke2lifecycle_snapshot_timeout_seconds | int >= rke2lifecycle_snapshot_poll_seconds | int
-      - rke2lifecycle_upgrade_timeout_seconds | int >= rke2lifecycle_health_poll_seconds | int
-      - rke2lifecycle_health_poll_seconds | int > 0
-      - rke2lifecycle_health_timeout_seconds | int >= rke2lifecycle_health_poll_seconds | int
-    fail_msg: >-
-      Use an HTTP(S) Rancher URL, non-empty cluster ID and name, and positive
-      timeout values. This guarded workflow supports exactly one node.
-    quiet: true
-
-- name: Validate the requested RKE2 version format
-  ansible.builtin.assert:
-    that:
-      - rke2lifecycle_target_version is string
-      - rke2lifecycle_target_version | regex_search('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
-    fail_msg: >-
-      rke2lifecycle_target_version must be an exact release such as v1.35.7+rke2r1.
-
-- name: Read the downstream cluster from the Rancher API
+- name: Wait for Rancher to report the cluster connected
   ansible.builtin.uri:
-    url: "{{ rke2lifecycle_api_url }}/v3/clusters/{{ rke2lifecycle_cluster_id }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ rke2lifecycle_api_key }}"
-      Accept: application/json
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    url: "{{ rke2_base_url }}/v3/clusters/{{ clusterid }}"
+    headers: "{{ rke2_headers }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
     return_content: true
     status_code: 200
-  register: rke2lifecycle_management_cluster
+  register: management_cluster
   changed_when: false
   no_log: true
   until:
-    - rke2lifecycle_management_cluster.json.id == rke2lifecycle_cluster_id
-    - rke2lifecycle_management_conditions.get('Ready') == 'True'
-    - rke2lifecycle_management_conditions.get('Connected') == 'True'
-  retries: "{{ (rke2lifecycle_health_timeout_seconds / rke2lifecycle_health_poll_seconds) | int }}"
-  delay: "{{ rke2lifecycle_health_poll_seconds | int }}"
+    - management_cluster.json.id == clusterid
+    - management_conditions.get('Ready') == 'True'
+    - management_conditions.get('Connected') == 'True'
+  retries: "{{ rke2_health_retries }}"
+  delay: "{{ rke2_health_delay }}"
   vars:
-    rke2lifecycle_management_conditions: >-
-      {{ rke2lifecycle_management_cluster.json.get('conditions', [])
+    management_conditions: >-
+      {{ management_cluster.json.get('conditions', [])
          | items2dict(key_name='type', value_name='status') }}
 
-- name: Read downstream RKE2 nodes through the Rancher proxy
+- name: Read downstream RKE2 nodes
   kubernetes.core.k8s_info:
-    host: "{{ rke2lifecycle_downstream_api_url }}"
-    api_key: "{{ rke2lifecycle_api_key }}"
-    validate_certs: "{{ rke2lifecycle_validate_certs }}"
+    host: "{{ rke2_downstream_url }}"
+    api_key: "{{ rke2_api_key }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
     api_version: v1
     kind: Node
-  register: rke2lifecycle_nodes_before
+  register: nodes_before
   changed_when: false
 
 - name: Validate the single-node all-roles topology
   ansible.builtin.assert:
     that:
-      - rke2lifecycle_nodes_before.resources | length == rke2lifecycle_expected_node_count | int
+      - nodes_before.resources | length == 1
       - >-
-        rke2lifecycle_nodes_before.resources[0].status.conditions
+        nodes_before.resources[0].status.conditions
         | selectattr('type', 'equalto', 'Ready')
         | selectattr('status', 'equalto', 'True')
         | list | length == 1
-      - "'node-role.kubernetes.io/control-plane' in rke2lifecycle_nodes_before.resources[0].metadata.labels"
-      - "'node-role.kubernetes.io/etcd' in rke2lifecycle_nodes_before.resources[0].metadata.labels"
-      - "'node-role.kubernetes.io/worker' in rke2lifecycle_nodes_before.resources[0].metadata.labels"
-    fail_msg: >-
-      The workflow expects one Ready RKE2 node with control-plane, etcd, and
-      worker roles.
+      - "'node-role.kubernetes.io/control-plane' in nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/etcd' in nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/worker' in nodes_before.resources[0].metadata.labels"
+    fail_msg: The workflow requires one Ready node with control-plane, etcd, and worker roles.
 
-- name: Record the current RKE2 version
+- name: Record current and requested versions
   ansible.builtin.set_fact:
-    rke2lifecycle_current_version: "{{ rke2lifecycle_nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"
-
-- name: Parse current and requested version components as integers
-  ansible.builtin.set_fact:
-    rke2lifecycle_current_version_major: >-
-      {{ (rke2lifecycle_current_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[0] | int }}
-    rke2lifecycle_current_version_minor: >-
-      {{ (rke2lifecycle_current_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[1] | int }}
-    rke2lifecycle_current_version_patch: >-
-      {{ (rke2lifecycle_current_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[2] | int }}
-    rke2lifecycle_current_version_revision: >-
-      {{ (rke2lifecycle_current_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[3] | int }}
-    rke2lifecycle_target_version_major: >-
-      {{ (rke2lifecycle_target_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[0] | int }}
-    rke2lifecycle_target_version_minor: >-
-      {{ (rke2lifecycle_target_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[1] | int }}
-    rke2lifecycle_target_version_patch: >-
-      {{ (rke2lifecycle_target_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[2] | int }}
-    rke2lifecycle_target_version_revision: >-
-      {{ (rke2lifecycle_target_version
-          | regex_findall(rke2lifecycle_version_pattern)
-          | first)[3] | int }}
+    current_version: "{{ nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"
+    current_parts: >-
+      {{ nodes_before.resources[0].status.nodeInfo.kubeletVersion
+         | regex_findall(rke2_version_pattern) | first | map('int') | list }}
+    target_parts: >-
+      {{ rke2_target_version
+         | regex_findall(rke2_version_pattern) | first | map('int') | list }}
   vars:
-    rke2lifecycle_version_pattern: '^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$'
+    rke2_version_pattern: '^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$'
 
-- name: Enforce a forward, sequential RKE2 upgrade
+- name: Enforce a forward sequential upgrade
   ansible.builtin.assert:
     that:
-      - rke2lifecycle_target_version_major | int == rke2lifecycle_current_version_major | int
-      - rke2lifecycle_target_version_minor | int >= rke2lifecycle_current_version_minor | int
-      - rke2lifecycle_target_version_minor | int <= (rke2lifecycle_current_version_minor | int) + 1
+      - target_parts[0] == current_parts[0]
+      - target_parts[1] >= current_parts[1]
+      - target_parts[1] <= current_parts[1] + 1
       - >-
-        (rke2lifecycle_target_version_minor | int) > (rke2lifecycle_current_version_minor | int)
-        or
-        rke2lifecycle_target_version == rke2lifecycle_current_version
-        or
-        (
-          (rke2lifecycle_target_version_minor | int) == (rke2lifecycle_current_version_minor | int)
-          and
-          (
-            (rke2lifecycle_target_version_patch | int) > (rke2lifecycle_current_version_patch | int)
-            or
-            (
-              (rke2lifecycle_target_version_patch | int) == (rke2lifecycle_current_version_patch | int)
-              and (rke2lifecycle_target_version_revision | int) > (rke2lifecycle_current_version_revision | int)
-            )
-          )
+        target_parts[1] > current_parts[1]
+        or target_parts[2] > current_parts[2]
+        or (
+          target_parts[2] == current_parts[2]
+          and target_parts[3] >= current_parts[3]
         )
     fail_msg: >-
-      Refusing {{ rke2lifecycle_current_version }} -> {{ rke2lifecycle_target_version }}.
+      Refusing {{ current_version }} -> {{ rke2_target_version }}.
       Downgrades, major changes, and skipped minor versions are not allowed.
-
-- name: Confirm the requested version is an official RKE2 release
-  ansible.builtin.uri:
-    url: >-
-      https://api.github.com/repos/rancher/rke2/releases/tags/{{
-      rke2lifecycle_target_version | urlencode }}
-    method: GET
-    headers:
-      Accept: application/vnd.github+json
-    status_code: 200
-    return_content: false
-  register: rke2lifecycle_release_lookup
-  changed_when: false
-  when: rke2lifecycle_verify_release_tag | bool

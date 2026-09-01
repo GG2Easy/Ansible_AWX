@@ -1,21 +1,18 @@
 ---
-- name: Validate credentials, cluster health, and requested version
+- name: Validate the cluster and requested version
   ansible.builtin.import_tasks: validate.yml
-  tags:
-    - validate
+  tags: validate
 
-- name: Create and verify the pre-upgrade etcd snapshot
+- name: Create a verified pre-upgrade snapshot
   ansible.builtin.import_tasks: snapshot.yml
-  when: rke2lifecycle_current_version != rke2lifecycle_target_version
-  tags:
-    - snapshot
+  when: current_version != rke2_target_version
+  tags: snapshot
 
-- name: Request the RKE2 upgrade through Rancher
+- name: Request the Rancher-managed upgrade
   ansible.builtin.import_tasks: upgrade.yml
-  tags:
-    - upgrade
+  when: current_version != rke2_target_version
+  tags: upgrade
 
-- name: Verify the completed upgrade
+- name: Verify the cluster after the upgrade
   ansible.builtin.import_tasks: verify.yml
-  tags:
-    - verify
+  tags: verify
