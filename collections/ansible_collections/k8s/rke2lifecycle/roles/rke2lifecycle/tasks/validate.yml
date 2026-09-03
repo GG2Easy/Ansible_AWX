@@ -50,20 +50,6 @@
   register: nodes_before
   changed_when: false
 
-- name: Validate the single-node all-roles topology
-  ansible.builtin.assert:
-    that:
-      - nodes_before.resources | length == 1
-      - >-
-        nodes_before.resources[0].status.conditions
-        | selectattr('type', 'equalto', 'Ready')
-        | selectattr('status', 'equalto', 'True')
-        | list | length == 1
-      - "'node-role.kubernetes.io/control-plane' in nodes_before.resources[0].metadata.labels"
-      - "'node-role.kubernetes.io/etcd' in nodes_before.resources[0].metadata.labels"
-      - "'node-role.kubernetes.io/worker' in nodes_before.resources[0].metadata.labels"
-    fail_msg: The workflow requires one Ready node with control-plane, etcd, and worker roles.
-
 - name: Record current and requested versions
   ansible.builtin.set_fact:
     current_version: "{{ nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"

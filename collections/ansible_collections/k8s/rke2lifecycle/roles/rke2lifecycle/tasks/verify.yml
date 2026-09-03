@@ -9,19 +9,20 @@
   register: nodes_after
   changed_when: false
   vars:
+    # Checked by node name (not just count) so this scales to any node count
     nodes_at_target: >-
       {{ nodes_after.get('resources', [])
          | selectattr('status.nodeInfo.kubeletVersion', 'equalto', rke2_target_version)
-         | list }}
+         | map(attribute='metadata.name') | list }}
+    nodes_ready_name: >-
+      {{ nodes_after.get('resources', []) | subelements('status.conditions', 'skip_missing')
+         | selectattr('1.type', 'equalto', 'Ready')
+         | selectattr('1.status', 'equalto', 'True')
+         | map(attribute='0.metadata.name') | list }}
   until:
-    - nodes_after.get('resources', []) | length == 1
-    - nodes_at_target | length == 1
-    - >-
-      (nodes_after.get('resources', []) | first | default({}))
-      .get('status', {}).get('conditions', [])
-      | selectattr('type', 'equalto', 'Ready')
-      | selectattr('status', 'equalto', 'True')
-      | list | length == 1
+    - nodes_after.get('resources', []) | length > 0
+    - nodes_at_target_names | length == nodes_after.get('resources', []) | length
+    - nodes_ready_names | length == nodes_after.get('resources', []) | length
   retries: "{{ rke2_upgrade_retries }}"
   delay: "{{ rke2_health_delay }}"
 
