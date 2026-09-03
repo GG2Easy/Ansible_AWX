@@ -19,6 +19,28 @@
     quiet: true
   no_log: true
 
+- name: Validate Rancher API endpoint and credential
+  ansible.builtin.uri:
+    url: "{{ rancher_url | regex_replace('/+$', '') }}/v3/clusters?limit=1"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ rancher_token }}"
+      Accept: "application/json"
+    return_content: true
+    follow_redirects: none
+    validate_certs: false  # Lab/self-signed certificate only
+    status_code:
+      - 200
+      - 301
+      - 302
+      - 401
+      - 403
+      - 404
+  register: rancher_api_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
 - name: Wait for Rancher to report the cluster connected
   ansible.builtin.uri:
     url: "{{ rke2_base_url }}/v3/clusters/{{ clusterid }}"
@@ -30,7 +52,7 @@
   changed_when: false
   no_log: false
   until:
-    - management_cluster.json.id == clusterid
+    - (management_cluster.status | default(0) | int) == 200
     - management_conditions.get('Ready') == 'True'
     - management_conditions.get('Connected') == 'True'
   retries: "{{ rke2_health_retries }}"
