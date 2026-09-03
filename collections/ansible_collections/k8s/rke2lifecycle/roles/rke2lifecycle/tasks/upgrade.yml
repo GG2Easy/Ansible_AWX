@@ -34,9 +34,9 @@
   no_log: true
 
 # Surface the failure reason without logging the request header/body (which carry the bearrer token)
-- name: Fail with the sanitizer Rancher response
+- name: Fail with the sanitized Rancher response
   ansible.builtin.fail:
     msg: >-
       Request the RKE2 version through Rancher failed: status={{ version_request.status | default('unknown') }}
       msg={{ version_request.msg | default('unknown') }}
-  wehn: version.request.status | default(0) !=200
+  when: version_request.status | default(0) !=200
