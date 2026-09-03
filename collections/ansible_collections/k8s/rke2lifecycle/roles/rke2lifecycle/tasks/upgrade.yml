@@ -28,5 +28,15 @@
            | combine({'kubernetesVersion': rke2_target_version}, recursive=true) }}
     validate_certs: "{{ rke2_verify_ssl }}"
     status_code: 200
+  register: version_request
   changed_when: provisioning_cluster.json.spec.kubernetesVersion != rke2_target_version
+  failed_when: false
   no_log: true
+
+#Surface the failure reason without logging the request header/body (which carry the bearrer token)
+- name: Fail with the sanitizer Rancher response
+  ansible.builtin.fail:
+    msg: >-
+      Request the RKE2 version through Rancher failed: status={{ version_request.status | default('unknown') }}
+      msg={{ version_request.msg | default('unknown') }}
+  wehn: version.request.status | default(0) !=200
