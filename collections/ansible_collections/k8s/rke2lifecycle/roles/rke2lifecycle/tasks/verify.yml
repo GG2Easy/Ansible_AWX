@@ -1,0 +1,76 @@
+---
+- name: Wait for the node to return Ready on the requested version
+  kubernetes.core.k8s_info:
+    host: "{{ rke2_downstream_url }}"
+    api_key: "{{ rke2_api_key }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
+    api_version: v1
+    kind: Node
+  register: nodes_after
+  changed_when: false
+  vars:
+    nodes_at_target: >-
+      {{ nodes_after.get('resources', [])
+         | selectattr('status.nodeInfo.kubeletVersion', 'equalto', rke2_target_version)
+         | list }}
+  until:
+    - nodes_after.get('resources', []) | length == 1
+    - nodes_at_target | length == 1
+    - >-
+      (nodes_after.get('resources', []) | first | default({}))
+      .get('status', {}).get('conditions', [])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list | length == 1
+  retries: "{{ rke2_upgrade_retries }}"
+  delay: "{{ rke2_health_delay }}"
+
+- name: Wait for Rancher to reconcile the requested version
+  ansible.builtin.uri:
+    url: "{{ rke2_cluster_url }}"
+    headers: "{{ rke2_headers }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
+    return_content: true
+    status_code: 200
+  register: provisioning_cluster_after
+  changed_when: false
+  no_log: true
+  until:
+    - provisioning_cluster_after.json.spec.kubernetesVersion == rke2_target_version
+    - provisioning_cluster_after.json.status.ready | default(false) | bool
+    - >-
+      provisioning_cluster_after.json.status.observedGeneration | int
+      == provisioning_cluster_after.json.metadata.generation | int
+  retries: "{{ rke2_health_retries }}"
+  delay: "{{ rke2_health_delay }}"
+
+- name: Wait for Rancher to report the cluster healthy
+  ansible.builtin.uri:
+    url: "{{ rke2_base_url }}/v3/clusters/{{ clusterid }}"
+    headers: "{{ rke2_headers }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
+    return_content: true
+    status_code: 200
+  register: cluster_after
+  changed_when: false
+  no_log: true
+  vars:
+    management_conditions: >-
+      {{ cluster_after.json.get('conditions', [])
+         | items2dict(key_name='type', value_name='status') }}
+  until:
+    - cluster_after.json.id == clusterid
+    - cluster_after.json.version.gitVersion == rke2_target_version
+    - management_conditions.get('Ready') == 'True'
+    - management_conditions.get('Connected') == 'True'
+  retries: "{{ rke2_health_retries }}"
+  delay: "{{ rke2_health_delay }}"
+
+- name: Report the completed upgrade
+  ansible.builtin.debug:
+    msg:
+      cluster: "{{ clustername }} ({{ clusterid }})"
+      previous_version: "{{ current_version }}"
+      requested_version: "{{ rke2_target_version }}"
+      node_versions: "{{ nodes_after.resources | map(attribute='status.nodeInfo.kubeletVersion') | list }}"
+      snapshots: "{{ verified_snapshots | default([]) }}"

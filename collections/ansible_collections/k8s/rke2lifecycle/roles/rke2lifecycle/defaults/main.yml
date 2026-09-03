@@ -1,0 +1,17 @@
+---
+rke2_api_key: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') | default('', true) }}"
+rke2_verify_ssl: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
+rke2_headers:
+  Authorization: "Bearer {{ rke2_api_key }}"
+  Accept: application/json
+
+rke2_base_url: "{{ rancher_url | regex_replace('/+$', '') }}"
+rke2_downstream_url: "{{ rke2_base_url }}/k8s/clusters/{{ clusterid }}"
+rke2_cluster_url: >-
+  {{ rke2_base_url }}/v1/provisioning.cattle.io.clusters/fleet-default/{{ clustername }}
+
+rke2_snapshot_retries: 180
+rke2_snapshot_delay: 5
+rke2_upgrade_retries: 240
+rke2_health_retries: 60
+rke2_health_delay: 10

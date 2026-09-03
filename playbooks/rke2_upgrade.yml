@@ -1,9 +1,0 @@
----
-- name: Snapshot and upgrade a Rancher-managed RKE2 cluster
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  any_errors_fatal: true
-
-  roles:
-    - role: rke2_upgrade

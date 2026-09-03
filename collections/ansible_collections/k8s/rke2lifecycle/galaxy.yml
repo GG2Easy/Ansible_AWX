@@ -1,0 +1,18 @@
+---
+namespace: k8s
+name: rke2lifecycle
+version: 1.0.0
+readme: README.md
+authors:
+  - GG2Easy
+description: Snapshot and upgrade Rancher-managed RKE2 clusters
+license:
+  - MIT
+tags:
+  - kubernetes
+  - rancher
+  - rke2
+  - upgrade
+dependencies:
+  kubernetes.core: ">=5.1.0,<6.0.0"
+repository: https://github.com/GG2Easy/Ansible_AWX

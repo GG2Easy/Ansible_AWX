@@ -1,0 +1,94 @@
+---
+- name: Validate required inventory and survey values
+  ansible.builtin.assert:
+    that:
+      - rancher_url | default('') | regex_search('^https?://')
+      - clusterid | default('') | length > 0
+      - clustername | default('') | length > 0
+      - >-
+        rke2_target_version | default('')
+        | regex_search('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
+    fail_msg: >-
+      Set rancher_url, clusterid, clustername, and an exact
+      rke2_target_version such as v1.36.3+rke2r1.
+
+- name: Validate the Rancher API credential
+  ansible.builtin.assert:
+    that: rke2_api_key | length > 0
+    fail_msg: Attach the Rancher admin API key credential to the AWX template.
+    quiet: true
+  no_log: true
+
+- name: Wait for Rancher to report the cluster connected
+  ansible.builtin.uri:
+    url: "{{ rke2_base_url }}/v3/clusters/{{ clusterid }}"
+    headers: "{{ rke2_headers }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
+    return_content: true
+    status_code: 200
+  register: management_cluster
+  changed_when: false
+  no_log: true
+  until:
+    - management_cluster.json.id == clusterid
+    - management_conditions.get('Ready') == 'True'
+    - management_conditions.get('Connected') == 'True'
+  retries: "{{ rke2_health_retries }}"
+  delay: "{{ rke2_health_delay }}"
+  vars:
+    management_conditions: >-
+      {{ management_cluster.json.get('conditions', [])
+         | items2dict(key_name='type', value_name='status') }}
+
+- name: Read downstream RKE2 nodes
+  kubernetes.core.k8s_info:
+    host: "{{ rke2_downstream_url }}"
+    api_key: "{{ rke2_api_key }}"
+    validate_certs: "{{ rke2_verify_ssl }}"
+    api_version: v1
+    kind: Node
+  register: nodes_before
+  changed_when: false
+
+- name: Validate the single-node all-roles topology
+  ansible.builtin.assert:
+    that:
+      - nodes_before.resources | length == 1
+      - >-
+        nodes_before.resources[0].status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length == 1
+      - "'node-role.kubernetes.io/control-plane' in nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/etcd' in nodes_before.resources[0].metadata.labels"
+      - "'node-role.kubernetes.io/worker' in nodes_before.resources[0].metadata.labels"
+    fail_msg: The workflow requires one Ready node with control-plane, etcd, and worker roles.
+
+- name: Record current and requested versions
+  ansible.builtin.set_fact:
+    current_version: "{{ nodes_before.resources[0].status.nodeInfo.kubeletVersion }}"
+    current_parts: >-
+      {{ nodes_before.resources[0].status.nodeInfo.kubeletVersion
+         | regex_findall(rke2_version_pattern) | first | map('int') | list }}
+    target_parts: >-
+      {{ rke2_target_version
+         | regex_findall(rke2_version_pattern) | first | map('int') | list }}
+  vars:
+    rke2_version_pattern: '^v([0-9]+)\.([0-9]+)\.([0-9]+)\+rke2r([0-9]+)$'
+
+- name: Enforce a forward sequential upgrade
+  ansible.builtin.assert:
+    that:
+      - target_parts[0] == current_parts[0]
+      - target_parts[1] >= current_parts[1]
+      - target_parts[1] <= current_parts[1] + 1
+      - >-
+        target_parts[1] > current_parts[1]
+        or target_parts[2] > current_parts[2]
+        or (
+          target_parts[2] == current_parts[2]
+          and target_parts[3] >= current_parts[3]
+        )
+    fail_msg: >-
+      Refusing {{ current_version }} -> {{ rke2_target_version }}.
+      Downgrades, major changes, and skipped minor versions are not allowed.

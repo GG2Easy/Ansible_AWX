@@ -1,127 +1,56 @@
-# Rancher-managed RKE2 upgrade with AWX
+# Rancher-managed RKE2 lifecycle
 
-This project performs a guarded upgrade of the imported, single-node RKE2
-cluster registered in Rancher. It uses one Rancher bearer token stored in the
-requested built-in AWX credential and a job-injecting credential. It does not
-use SSH for cluster maintenance and does not use `kdeploy`.
+This AWX project snapshots and upgrades one imported, single-node RKE2 cluster
+through the Rancher API. Cluster maintenance uses Rancher's downstream
+Kubernetes proxy; no node SSH is required by the playbook.
 
-The workflow:
+## Required AWX configuration
 
-1. Authenticates to Rancher with the AWX-injected bearer token.
-2. Confirms Rancher reports the downstream cluster active and non-transitioning.
-3. Confirms the node is Ready and has control-plane, etcd, and worker roles.
-4. Validates the requested RKE2 release and rejects downgrades or skipped
-   minor versions.
-5. Creates an `ETCDSnapshotSave` operation in Rancher.
-6. Waits for the operation to reach `Succeeded`.
-7. Confirms the corresponding downstream `ETCDSnapshotFile` exists.
-8. Creates or updates an RKE2 `Plan` for the existing System Upgrade
-   Controller.
-9. Waits for the Plan to complete, then confirms the node version, node
-   readiness, and Rancher cluster health.
-
-## Repository layout
-
-```text
-.
-|-- awx/survey_spec.json
-|-- collections/requirements.yml
-|-- execution-environment.yml
-|-- inventory/localhost.yml
-|-- playbooks/rke2_upgrade.yml
-|-- requirements.txt
-```
-
-## AWX credential
-
-Create a credential using the built-in type
-**OpenShift or Kubernetes API Bearer Token**:
-
-- **Name:** `Rancher RKE2 Bearer Token`
-- **OpenShift or Kubernetes API Endpoint:** `https://192.168.56.2`
-- **API authentication bearer token:** the Rancher automation token
-- **Verify SSL:** disabled only for this lab's self-signed Rancher endpoint
-
-AWX reserves that built-in type for Kubernetes container groups; it has no
-job-template injectors. Create a second credential type named
-`Rancher Kubernetes API Bearer Token - Job` with these environment
-injectors, then create `Rancher RKE2 Bearer Token - Job` from the same
-endpoint and token:
+The inventory host must define:
 
 ```yaml
-env:
-  K8S_AUTH_HOST: "{{ host }}"
-  K8S_AUTH_API_KEY: "{{ bearer_token }}"
-  K8S_AUTH_VERIFY_SSL: "{{ verify_ssl }}"
+rancher_url: https://rancher.example.com
+clusterid: c-m-example
+clustername: downstream-cluster
 ```
 
-Attach both credentials to the job template. This keeps the requested built-in
-**OpenShift or Kubernetes API Bearer Token** credential visible on the
-template, while the custom credential supplies the environment injectors that
-the managed built-in type does not provide. The supplied VM configuration
-script creates and attaches both credentials. The role uses the Rancher API
-for the snapshot operation and the Rancher downstream proxy at
-`/k8s/clusters/c-n6thr` for Kubernetes resources.
+Attach the Rancher admin API key using an **OpenShift or Kubernetes API Bearer
+Token** credential. It must inject:
 
-For production, enable certificate verification and place Rancher's CA in the
-credential. Rotate the token before its expiry and immediately revoke it if it
-is exposed.
+- `K8S_AUTH_API_KEY`
+- `K8S_AUTH_VERIFY_SSL`
 
-## AWX project and job template
+The job survey supplies the exact target through `rke2_target_version`, for
+example `v1.36.3+rke2r1`.
 
-Create a Git project from:
+Use `rke2lifecycle.yaml` as the job-template playbook.
 
-```text
-https://github.com/GG2Easy/Ansible_AWX.git
-```
+## Workflow
 
-Create a job template with:
+1. Confirm Rancher reports the cluster Ready and Connected.
+2. Confirm the downstream cluster has one Ready control-plane/etcd/worker node.
+3. Reject downgrades, major upgrades, and skipped minor releases.
+4. Ask Rancher to create an etcd snapshot and verify the resulting downstream
+   `ETCDSnapshotFile`.
+5. Update the Rancher provisioning cluster to the requested RKE2 version.
+6. Wait for the node, provisioning resource, and Rancher management cluster to
+   converge on that version.
 
-- **Playbook:** `playbooks/rke2_upgrade.yml`
-- **Inventory:** a localhost inventory, or the existing `RKE2` inventory
-- **Credentials:** `Rancher RKE2 Bearer Token` and
-  `Rancher RKE2 Bearer Token - Job`
-- **Survey enabled:** yes
+A repeated run at the current version is idempotent and skips both the snapshot
+and upgrade request.
 
-Import [awx/survey_spec.json](awx/survey_spec.json) as the survey definition.
-The required survey variable is `rke2_target_version`. It is a single-select
-multiple-choice question with these currently offered upgrade targets:
+## Files
 
-- `v1.35.6+rke2r1`
-- `v1.35.7+rke2r1` (default)
+- `rke2lifecycle.yaml`: stable AWX entrypoint.
+- `collections/ansible_collections/k8s/rke2lifecycle/roles/rke2lifecycle`:
+  lifecycle implementation.
+- `collections/requirements.yml` and `requirements.txt`: execution
+  environment dependencies.
 
-Both are one minor release above the lab's initial `v1.34.10+rke2r1`. Update
-the choices as the environment changes. The role still verifies that the exact
-tag exists in the official RKE2 GitHub releases.
+## Safety
 
-## Local syntax check
-
-```bash
-ansible-galaxy collection install -r collections/requirements.yml
-ansible-playbook --syntax-check playbooks/rke2_upgrade.yml
-```
-
-To run outside AWX, export the same variables injected by the credential:
-
-```bash
-export K8S_AUTH_HOST=https://rancher.example.com
-export K8S_AUTH_API_KEY='token-id:secret'
-export K8S_AUTH_VERIFY_SSL=true
-ansible-playbook playbooks/rke2_upgrade.yml -e rke2_target_version=v1.35.7+rke2r1
-```
-
-Do not store the token in inventory, source control, job extra variables, or
-the survey.
-
-## Safety constraints
-
-- The role is intentionally configured for one all-roles RKE2 node.
-- A single-node control plane has no high availability; the Kubernetes API is
-  temporarily unavailable while RKE2 restarts.
-- Only forward upgrades are accepted.
-- A minor release may advance by at most one at a time.
-- The upgrade is not submitted until the snapshot operation succeeds and the
-  downstream snapshot record is visible.
-- The upgrade Plan remains in the cluster as the declared desired version.
-- Local snapshots protect against upgrade mistakes but not loss of the VM.
-  Production clusters should copy snapshots to S3-compatible storage.
+The role intentionally supports exactly one all-roles node. A real version
+change is never requested without a newly verified snapshot. A single-node
+control plane is unavailable while RKE2 restarts, so the upgrade wait is set to
+40 minutes. Keep Rancher certificate verification enabled outside lab
+environments and never store API keys in source control.
