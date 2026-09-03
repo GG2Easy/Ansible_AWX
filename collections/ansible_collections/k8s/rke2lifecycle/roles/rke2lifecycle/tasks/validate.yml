@@ -28,7 +28,7 @@
     status_code: 200
   register: management_cluster
   changed_when: false
-  no_log: true
+  no_log: false
   until:
     - management_cluster.json.id == clusterid
     - management_conditions.get('Ready') == 'True'
