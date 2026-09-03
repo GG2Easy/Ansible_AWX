@@ -33,7 +33,7 @@
   failed_when: false
   no_log: true
 
-#Surface the failure reason without logging the request header/body (which carry the bearrer token)
+# Surface the failure reason without logging the request header/body (which carry the bearrer token)
 - name: Fail with the sanitizer Rancher response
   ansible.builtin.fail:
     msg: >-
