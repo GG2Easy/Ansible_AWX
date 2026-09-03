@@ -41,6 +41,20 @@
   failed_when: false
   no_log: true
 
+- name: Report sanitized Rancher API result
+  ansible.builtin.debug:
+    msg:
+      url: "{{ rancher_url | regex_replace('/+$', '') }}/v3/clusters?limit=1"
+      status: "{{ rancher_api_probe.status | default(-1) }}"
+      content_type: "{{ rancher_api_probe.content_type | default('none') }}"
+      message: >-
+        {{
+          (rancher_api_probe.json | default({})).get(
+            'message',
+            rancher_api_probe.msg | default('No diagnostic message')
+          )
+        }}
+
 - name: Wait for Rancher to report the cluster connected
   ansible.builtin.uri:
     url: "{{ rke2_base_url }}/v3/clusters/{{ clusterid }}"
